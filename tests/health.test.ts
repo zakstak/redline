@@ -128,6 +128,7 @@ describe("static bootstrap serving", () => {
               "diffContextLines",
               "keyboardLayout",
               "theme",
+              "typography",
             ],
           },
           CommentExport: {

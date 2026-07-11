@@ -40,6 +40,10 @@ import type {
 } from "../shared/review-contract.js";
 import { ReviewDatabase } from "./review-database.js";
 import { parseThemePreference, type ThemePreference } from "../shared/theme.js";
+import {
+  parseTypographyPreference,
+  type TypographyPreference,
+} from "../shared/typography.js";
 
 export class ThemePreferenceRequestError extends Error {}
 
@@ -1475,6 +1479,38 @@ export class ReviewWorkspace {
         );
       }
       return this.reviewDatabase().deleteThemePreference();
+    });
+  }
+
+  async updateTypographyPreference(
+    expectedWorkspaceRoot: string,
+    value: unknown,
+  ): Promise<ReviewSettings> {
+    await this.ensureInitialized();
+    if (resolve(expectedWorkspaceRoot) !== this.root) {
+      throw new Error(
+        "The active workspace changed before its typography could be saved.",
+      );
+    }
+    const typography = parseTypographyPreference(value);
+    if (!typography) {
+      throw new Error(
+        "Typography must use supported fonts and whole-number sizes within the documented bounds.",
+      );
+    }
+    const generation = this.workspaceGeneration;
+    return this.enqueueExclusive(() => {
+      if (
+        generation !== this.workspaceGeneration ||
+        resolve(expectedWorkspaceRoot) !== this.root
+      ) {
+        throw new Error(
+          "The active workspace changed before its typography could be saved.",
+        );
+      }
+      return this.reviewDatabase().updateTypographyPreference(
+        typography satisfies TypographyPreference,
+      );
     });
   }
 

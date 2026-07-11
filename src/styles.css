@@ -2,7 +2,7 @@
   color-scheme: dark;
   color: var(--ink);
   background: var(--canvas);
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
   font-synthesis: none;
   font-kerning: normal;
   line-height: var(--leading-body);
@@ -44,12 +44,18 @@
   --syntax-operator: #b8bac3;
   --syntax-invalid: #ff8f98;
   --shadow-sm: 0 8px 24px oklch(0.08 0.008 270 / 0.34);
-  --mono: "SFMono-Regular", "Cascadia Code", "Liberation Mono", monospace;
-  --text-caption: 0.75rem;
-  --text-ui: 0.875rem;
-  --text-body: 1rem;
-  --text-title: 1.125rem;
-  --text-display: 1.5rem;
+  --font-ui: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-code: "SFMono-Regular", "Cascadia Code", "Liberation Mono", monospace;
+  --mono: var(--font-code);
+  --typography-ui-scale: 1;
+  --typography-code-scale: 1;
+  --text-caption: calc(0.75rem * var(--typography-ui-scale));
+  --text-ui: calc(0.875rem * var(--typography-ui-scale));
+  --text-body: calc(1rem * var(--typography-ui-scale));
+  --text-code: calc(1rem * var(--typography-code-scale));
+  --text-code-caption: calc(0.75rem * var(--typography-code-scale));
+  --text-title: calc(1.125rem * var(--typography-ui-scale));
+  --text-display: calc(1.5rem * var(--typography-ui-scale));
   --weight-regular: 400;
   --weight-semibold: 600;
   --weight-bold: 700;
@@ -1291,8 +1297,83 @@ kbd {
   min-width: 40rem;
   background: var(--paper);
   font-family: var(--mono);
-  font-size: var(--text-body);
+  font-size: var(--text-code);
   line-height: var(--leading-body);
+  --text-caption: var(--text-code-caption);
+  --text-body: var(--text-code);
+}
+
+.typography-settings {
+  align-items: start;
+}
+
+.typography-controls {
+  display: grid;
+  gap: var(--space-lg);
+  min-width: min(100%, 22rem);
+}
+
+.typography-controls label {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.typography-controls label > span,
+.typography-size-control strong {
+  font-weight: var(--weight-bold);
+}
+
+.typography-controls label > small,
+.typography-size-control small {
+  color: var(--ink-muted);
+}
+
+.typography-controls select {
+  min-height: 2.75rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 0.35rem;
+  background: var(--paper-deep);
+  color: var(--ink);
+  padding: 0 var(--space-md);
+}
+
+.typography-size-control {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(8rem, 1fr) 2.75rem;
+  align-items: stretch;
+  gap: var(--space-sm);
+}
+
+.typography-size-control button,
+.typography-save-row button {
+  min-height: 2.75rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 0.35rem;
+  background: var(--paper-deep);
+  color: var(--ink);
+}
+
+.typography-size-control output {
+  display: grid;
+  place-content: center;
+  text-align: center;
+}
+
+.typography-save-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+}
+
+.typography-save-row p {
+  margin: 0 auto 0 0;
+  color: var(--ink-muted);
+}
+
+.typography-save-row button {
+  padding: 0 var(--space-md);
 }
 
 .split-diff {
@@ -1338,7 +1419,7 @@ kbd {
   padding: 0.22rem 0.65rem;
   color: var(--ink-muted);
   font-family: var(--mono);
-  font-size: var(--text-caption);
+  font-size: var(--text-code-caption);
   font-weight: var(--weight-bold);
   letter-spacing: 0.06em;
   text-transform: uppercase;

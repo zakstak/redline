@@ -195,6 +195,17 @@ const openApiDocument = {
         },
       },
     },
+    "/api/settings/typography": {
+      put: {
+        summary: "Validate and atomically save active workspace typography",
+        responses: {
+          "200": { description: "Updated workspace settings" },
+          "400": {
+            description: "Invalid typography or stale workspace identity",
+          },
+        },
+      },
+    },
     "/api/diff": {
       get: {
         summary: "Read a raw and structured diff for one changed file",
@@ -604,7 +615,13 @@ const openApiDocument = {
       },
       Settings: {
         type: "object",
-        required: ["version", "diffContextLines", "keyboardLayout", "theme"],
+        required: [
+          "version",
+          "diffContextLines",
+          "keyboardLayout",
+          "theme",
+          "typography",
+        ],
         properties: {
           version: { type: "integer", const: 1 },
           diffContextLines: { type: "integer", minimum: 0, maximum: 20 },
@@ -625,6 +642,27 @@ const openApiDocument = {
             additionalProperties: {
               type: "string",
               pattern: "^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+            },
+          },
+          typography: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "version",
+              "uiFont",
+              "codeFont",
+              "interfaceFontSize",
+              "codeFontSize",
+            ],
+            properties: {
+              version: { type: "integer", const: 1 },
+              uiFont: { type: "string", enum: ["system", "humanist", "serif"] },
+              codeFont: {
+                type: "string",
+                enum: ["system", "modern", "compact"],
+              },
+              interfaceFontSize: { type: "integer", minimum: 12, maximum: 18 },
+              codeFontSize: { type: "integer", minimum: 12, maximum: 20 },
             },
           },
         },
@@ -753,6 +791,7 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
       updateSettings: { method: "PUT", path: "/api/settings" },
       updateTheme: { method: "PUT", path: "/api/settings/theme" },
       resetTheme: { method: "DELETE", path: "/api/settings/theme" },
+      updateTypography: { method: "PUT", path: "/api/settings/typography" },
       diff: { method: "GET", path: "/api/diff?path=<workspace-relative-path>" },
       reviewData: { method: "GET", path: "/api/review" },
       exportComments: {
@@ -917,6 +956,36 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
         error,
         error instanceof ThemePreferenceRequestError ? 400 : 500,
       );
+    }
+  });
+
+  app.put("/api/settings/typography", async (request, reply) => {
+    const body = request.body as {
+      workspaceRoot?: unknown;
+      preference?: unknown;
+    };
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      Object.keys(body).some(
+        (key) => !["workspaceRoot", "preference"].includes(key),
+      ) ||
+      typeof body.workspaceRoot !== "string" ||
+      !body.workspaceRoot
+    ) {
+      return sendError(
+        reply,
+        new Error("Typography updates require the active workspace identity."),
+      );
+    }
+    try {
+      return await workspace.updateTypographyPreference(
+        body.workspaceRoot,
+        body.preference,
+      );
+    } catch (error) {
+      return sendError(reply, error);
     }
   });
 
