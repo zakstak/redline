@@ -25,6 +25,7 @@ import { highlightLines, type SyntaxToken } from "./highlight.js";
 const DESKTOP_ROW_HEIGHT = 26;
 const TOUCH_ROW_HEIGHT = 34;
 const HUNK_HEIGHT = 28;
+const TOUCH_HUNK_HEIGHT = 44;
 const META_HEIGHT = 24;
 const SPLIT_MIN_WIDTH = 800;
 const OVERSCAN_ROWS = 24;
@@ -608,7 +609,9 @@ export const DiffView = forwardRef<DiffViewHandle, DiffViewProps>(
         (Number.isFinite(codeScale) ? codeScale : 1),
     );
     const normalizedCodeScale = Number.isFinite(codeScale) ? codeScale : 1;
-    const hunkHeight = Math.round(HUNK_HEIGHT * normalizedCodeScale);
+    const hunkHeight = Math.round(
+      (coarsePointer ? TOUCH_HUNK_HEIGHT : HUNK_HEIGHT) * normalizedCodeScale,
+    );
     const metaHeight = Math.round(META_HEIGHT * normalizedCodeScale);
     const items = useMemo<ActiveItem[]>(
       () =>
