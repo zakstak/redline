@@ -194,6 +194,36 @@ as renames remain independent. Tracked deletions can be deferred.
 `POST /api/review/restore` is idempotent, and an observed clean status removes
 the marker so a later change at that path returns to the active queue.
 
+### GitHub pull request comments
+
+Redline can import published, line-anchored review threads from one exact open
+GitHub pull request. Install and authenticate the GitHub CLI first
+(`gh auth login`). Discovery proves the base repository, head repository, branch
+or detached commit, and a single eligible PR; it fails closed for conflicting
+remotes, forks that do not match the configured push target, ambiguous PRs, or
+uncertain ancestry.
+
+Comment retrieval is manual through **Import GitHub comments** or **Refresh
+GitHub comments**. Imported roots and replies are read-only, preserve each
+poster, and never change local unresolved counts, approval eligibility,
+snapshots, filters, or comment mutations. Redline remaps retained anchors after
+worktree changes without polling GitHub. Unavailable or ambiguous anchors remain
+visible in structured exports with a stable mapping reason.
+
+Synchronization uses argument-array `gh api` calls only. Complete snapshots are
+atomically replaced after pagination and bounded source acquisition succeeds;
+failure or cancellation preserves the previous generation. Redline retains at
+most eight snapshots, 25 MiB per PR, 64 MiB of unique source text, and 100 MiB
+overall, evicting the oldest inactive identity deterministically. Delete
+`.git/redline/github-imports.json` to reset imported data.
+
+GitHub-flavored Markdown supports tables, task lists, strikethrough, autolinks,
+and fenced code. Raw HTML and images in comments are disabled. Links are limited
+to credential-free HTTP(S), `mailto`, and document fragments. Author avatars are
+fetched only by Redline's bounded same-origin proxy from
+`avatars.githubusercontent.com`; initials remain available when an avatar is
+missing or invalid.
+
 ## Architecture
 
 - `src/`: React interface, diff model, and syntax highlighting.

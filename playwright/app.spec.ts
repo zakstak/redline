@@ -201,6 +201,17 @@ async function mockReviewApi(
       : workspacePayload;
     return route.fulfill({ json });
   });
+  await page.route("**/api/github/status", (route) =>
+    route.fulfill({
+      json: {
+        version: 1,
+        state: "none",
+        retained: false,
+        stale: false,
+        message: "No eligible open GitHub pull request matches this worktree.",
+      },
+    }),
+  );
   await page.route("**/api/diff?*", async (route) => {
     diffRequests.push(route.request().url());
     const payload =
@@ -300,6 +311,215 @@ test("renders local changes and flags files changed since approval", async ({
       .first(),
   ).toBeVisible();
   await expect(page.locator('input[type="file"]')).toHaveCount(0);
+});
+
+test("defers a whole file outside the active queue and restores its latest diff", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  const deferredWorkspace: WorkspaceResponse = {
+    ...changedWorkspace,
+    files: changedWorkspace.files.filter((file) => file.path !== "src/App.tsx"),
+    deferredFiles: [changedWorkspace.files[0]],
+    counts: {
+      ...changedWorkspace.counts,
+      total: 1,
+      needsReview: 1,
+      changed: 0,
+    },
+  };
+  await page.route("**/api/review/defer", (route) =>
+    route.fulfill({ json: deferredWorkspace }),
+  );
+  await page.route("**/api/review/restore", (route) =>
+    route.fulfill({ json: changedWorkspace }),
+  );
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Defer file" }).click();
+  await expect(page.getByRole("heading", { name: "Deferred" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /App\.tsx.*Deferred/ }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /^App\.tsx/ })).toHaveCount(1);
+  await page.getByRole("button", { name: /App\.tsx.*Deferred/ }).click();
+  await expect(page.locator(".active-file-heading")).toContainText("App.tsx");
+  await expect(
+    page.getByRole("button", { name: "Approve file" }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "Restore" }).click();
+  await expect(page.getByRole("heading", { name: "Deferred" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Defer file" })).toBeEnabled();
+});
+
+test("renders immutable agent decisions and explicitly reopens the thread", async ({
+  page,
+}) => {
+  const decided = {
+    id: "55555555-5555-4555-8555-555555555555",
+    path: "src/App.tsx",
+    anchors: [{ side: "new" as const, startLine: 1, endLine: 1 }],
+    body: "Handle this edge case.",
+    createdAt: "2026-07-09T12:30:00.000Z",
+    fingerprint: "app-v2",
+    outdated: false,
+    state: "accepted" as const,
+    rootVersion: 1,
+    threadRevision: 1,
+    replies: [
+      {
+        id: "reply-1",
+        actor: "agent" as const,
+        body: "Implemented and validated with npm run ci.",
+        createdAt: "2026-07-09T13:00:00.000Z",
+        decision: "accepted" as const,
+        requestId: "request-1",
+      },
+    ],
+  };
+  await mockReviewApi(page, { ...diff, comments: [decided] });
+  await page.route("**/api/comments/*/reopen", (route) =>
+    route.fulfill({
+      json: {
+        comment: { ...decided, state: "pending", threadRevision: 2 },
+      },
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Snapshot 2$/ }).click();
+  await expect(
+    page.getByText("Implemented and validated with npm run ci."),
+  ).toBeVisible();
+  await expect(page.getByText("accepted", { exact: true })).toHaveCount(2);
+  await expect(
+    page.getByRole("button", { name: /edit agent reply/i }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Reopen thread" }).click();
+  await expect(page.getByText("pending", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reopen thread" })).toHaveCount(
+    0,
+  );
+});
+
+test("imports read-only GitHub threads with safe GFM and per-reply authors", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let imported = false;
+  const githubComment = {
+    id: "github:base/project#17:thread-1",
+    path: "src/App.tsx",
+    anchors: [{ side: "new" as const, startLine: 1, endLine: 1 }],
+    body: [
+      "**Root note**",
+      "",
+      "| A | B |",
+      "| - | - |",
+      "| 1 | 2 |",
+      "",
+      "- [x] verified",
+      "",
+      '<img src="https://example.com/tracker.png">',
+      "[unsafe](javascript:alert(1))",
+    ].join("\n"),
+    createdAt: "2026-07-09T12:30:00.000Z",
+    fingerprint: "app-v2",
+    outdated: false,
+    state: "pending" as const,
+    rootVersion: 1,
+    threadRevision: 1,
+    source: "github" as const,
+    readOnly: true,
+    author: {
+      login: "root-user",
+      name: "Root User",
+      avatarUrl: "https://avatars.githubusercontent.com/u/1",
+      initials: "RU",
+    },
+    replies: [
+      {
+        id: "github:reply-1",
+        actor: "github" as const,
+        body: "Reply body",
+        createdAt: "2026-07-09T13:00:00.000Z",
+        author: {
+          login: "reply-user",
+          name: "Reply Person",
+          avatarUrl: null,
+          initials: "RP",
+        },
+      },
+    ],
+    github: {
+      repository: "base/project",
+      pullRequest: 17,
+      threadId: "thread-1",
+      url: "https://github.com/base/project/pull/17#discussion_r1",
+      resolved: false,
+      synchronizedAt: "2026-07-09T13:00:00.000Z",
+      mapping: "mapped" as const,
+    },
+  };
+  await page.route("**/api/github/status", (route) =>
+    route.fulfill({
+      json: {
+        version: 1,
+        state: "available",
+        repository: "base/project",
+        pullRequest: 17,
+        title: "Feature",
+        retained: false,
+        stale: false,
+        message: "GitHub review comments are available to import.",
+      },
+    }),
+  );
+  await page.route("**/api/github/avatar?*", (route) =>
+    route.fulfill({ status: 404, body: "missing" }),
+  );
+  await page.route("**/api/github/refresh", (route) => {
+    imported = true;
+    return route.fulfill({
+      json: {
+        version: 1,
+        state: "available",
+        repository: "base/project",
+        pullRequest: 17,
+        title: "Feature",
+        retained: true,
+        stale: false,
+        lastSuccessAt: "2026-07-09T13:00:00.000Z",
+        message: "Imported 1 GitHub review thread.",
+      },
+    });
+  });
+  await page.route("**/api/diff?*", (route) =>
+    route.fulfill({
+      json: { ...diff, comments: imported ? [githubComment] : [] },
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Snapshot 2$/ }).click();
+  await page.getByRole("button", { name: "Import GitHub comments" }).click();
+  await expect(page.getByText("Root User")).toBeVisible();
+  await expect(page.getByText("RU", { exact: true })).toBeVisible();
+  await expect(page.getByText("Reply Person")).toBeVisible();
+  await expect(page.getByRole("table")).toBeVisible();
+  await expect(page.getByText("verified")).toBeVisible();
+  await expect(page.locator(".github-markdown img")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "unsafe" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Delete note" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole("button", { name: "Reopen thread" })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("link", { name: "View on GitHub" }),
+  ).toHaveAttribute(
+    "href",
+    "https://github.com/base/project/pull/17#discussion_r1",
+  );
 });
 
 test("collapses and restores the review panel", async ({ page }) => {

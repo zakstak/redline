@@ -1980,6 +1980,97 @@ kbd {
   border-top: 1px solid var(--line);
 }
 
+.github-import {
+  display: grid;
+  gap: 0.65rem;
+  margin-block: 1rem;
+  padding: 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--accent) 5%, var(--paper));
+}
+
+.github-import h2,
+.github-import p {
+  margin: 0;
+}
+
+.github-import button {
+  min-height: 2.75rem;
+}
+
+.github-import small {
+  color: var(--ink-muted);
+}
+
+.review-comment[data-source="github"] {
+  border-inline-start: 0.2rem solid var(--accent);
+}
+
+.comment-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.author-avatar {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 1.75rem;
+  block-size: 1.75rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--paper));
+  font-size: 0.7rem;
+  font-weight: 750;
+}
+
+.author-avatar img {
+  inline-size: 100%;
+  block-size: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.github-markdown {
+  overflow-wrap: anywhere;
+}
+
+.github-markdown > :first-child {
+  margin-block-start: 0;
+}
+
+.github-markdown > :last-child {
+  margin-block-end: 0;
+}
+
+.github-markdown pre {
+  overflow: auto;
+  padding: 0.7rem;
+  border-radius: 0.5rem;
+  background: var(--canvas);
+}
+
+.github-markdown table {
+  display: block;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.github-markdown th,
+.github-markdown td {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line);
+}
+
+.github-thread-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+}
+
 .comments-heading > .icon {
   color: var(--ink-muted);
 }

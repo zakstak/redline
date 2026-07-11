@@ -599,6 +599,25 @@ describe("local review snapshots", () => {
     }
   });
 
+  it("rejects imported GitHub identifiers through every local thread mutation", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    await workspace.initialize();
+    await expect(
+      workspace.deleteComment("github:repository#1:thread"),
+    ).rejects.toThrow("imported_read_only");
+    await expect(
+      workspace.mutateThread({
+        commentId: "github:repository#1:thread",
+        expectedState: "pending",
+        expectedRootVersion: 1,
+        expectedThreadRevision: 0,
+        requestId: "imported-mutation",
+        body: "Must remain immutable.",
+      }),
+    ).rejects.toThrow("imported_read_only");
+    workspace.close();
+  });
+
   it("emits a debounced local event when a worktree file changes", async () => {
     const workspace = new ReviewWorkspace(repository);
     await workspace.initialize();
