@@ -4,6 +4,9 @@
   "private": true,
   "description": "A local-first review workspace for uncommitted Git changes.",
   "type": "module",
+  "bin": {
+    "redline": "dist/server/cli/index.js"
+  },
   "engines": {
     "node": ">=22.13.0"
   },
@@ -11,15 +14,17 @@
     "dev": "concurrently -k -n web,server -c cyan,magenta \"npm run dev:web\" \"npm run dev:server\"",
     "dev:web": "vite",
     "dev:server": "PORT=4323 tsx watch server/index.ts",
+    "dev:cli": "tsx cli/index.ts",
     "start": "NODE_ENV=production node dist/server/server/index.js",
     "build": "npm run build:web && npm run build:server",
     "build:web": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
+    "test": "node tests/run-vitest.mjs",
     "test:e2e": "npm run build && playwright test",
-    "ci": "npm run lint && npm run typecheck && npm run test && npm run build"
+    "test:package": "node tests/package-cli.mjs",
+    "ci": "npm run lint && npm run typecheck && npm run test && npm run build && npm run test:package"
   },
   "dependencies": {
     "@fastify/static": "^9.3.0",

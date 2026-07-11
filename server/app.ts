@@ -1,16 +1,11 @@
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import { randomUUID } from "node:crypto";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
-import { THEME_COLOR_ROLES } from "../shared/theme.js";
-import {
-  ReviewWorkspace,
-  ThemePreferenceRequestError,
-  TypographyPreferenceRequestError,
-} from "./review-workspace.js";
+import { ReviewWorkspace } from "./review-workspace.js";
 
 const reviewAnchorSchema = {
   type: "object",
@@ -149,81 +144,94 @@ const openApiDocument = {
         },
       },
     },
-    "/api/settings/theme": {
-      put: {
-        summary: "Validate and save the active workspace theme",
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                additionalProperties: false,
-                required: ["workspaceRoot", "preference"],
-                properties: {
-                  workspaceRoot: { type: "string" },
-                  preference: {
-                    $ref: "#/components/schemas/ThemePreference",
-                  },
-                },
-              },
-            },
-          },
-        },
+    "/api/review/defer": {
+      post: {
+        summary: "Defer one changed file from the active queue",
         responses: {
-          "200": { description: "Updated workspace settings" },
-          "400": { description: "Invalid or stale theme preference" },
-        },
-      },
-      delete: {
-        summary: "Delete the active workspace theme preference",
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                additionalProperties: false,
-                required: ["workspaceRoot"],
-                properties: { workspaceRoot: { type: "string" } },
-              },
-            },
-          },
-        },
-        responses: {
-          "200": { description: "Default workspace theme settings" },
-          "400": { description: "Stale workspace identity" },
+          "200": { description: "Updated active and deferred queues" },
         },
       },
     },
-    "/api/settings/typography": {
-      put: {
-        summary: "Validate and atomically save active workspace typography",
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                additionalProperties: false,
-                required: ["workspaceRoot", "preference"],
-                properties: {
-                  workspaceRoot: { type: "string" },
-                  preference: {
-                    $ref: "#/components/schemas/TypographyPreference",
-                  },
-                },
-              },
-            },
-          },
-        },
+    "/api/review/restore": {
+      post: {
+        summary: "Restore one changed deferred file to the active queue",
         responses: {
-          "200": { description: "Updated workspace settings" },
-          "400": {
-            description: "Invalid typography or stale workspace identity",
-          },
-          "500": { description: "Typography persistence failed" },
+          "200": { description: "Updated active and deferred queues" },
         },
+      },
+    },
+    "/api/cli/discovery": {
+      get: {
+        summary: "Discover process-bound CLI workspace identity",
+        responses: {
+          "200": { description: "Workspace root and server token" },
+        },
+      },
+    },
+    "/api/cli/agent/review/{id}": {
+      get: {
+        summary: "Read one complete versioned review thread packet",
+        responses: { "200": { description: "Review thread packet" } },
+      },
+    },
+    "/api/cli/agent/review-all": {
+      get: {
+        summary: "Read every pending review thread packet",
+        responses: { "200": { description: "Pending thread packets" } },
+      },
+    },
+    "/api/cli/agent/respond/{id}": {
+      post: {
+        summary: "Append an immutable agent reply and resolve a review thread",
+        responses: {
+          "200": { description: "Updated versioned review thread" },
+          "409": { description: "Stale context or idempotency conflict" },
+        },
+      },
+    },
+    "/api/cli/agent/reopen/{id}": {
+      post: {
+        summary: "Reopen a resolved review thread",
+        responses: {
+          "200": { description: "Reopened versioned review thread" },
+          "409": { description: "Stale thread version" },
+        },
+      },
+    },
+    "/api/cli/review": {
+      get: {
+        summary: "Read process-bound review state for the CLI",
+        responses: { "200": { description: "Versioned review payload" } },
+      },
+    },
+    "/api/cli/diff": {
+      get: {
+        summary: "Read a process-bound file diff for the CLI",
+        responses: { "200": { description: "Structured file diff" } },
+      },
+    },
+    "/api/cli/comments": {
+      post: {
+        summary: "Create a process-bound anchored comment from the CLI",
+        responses: { "200": { description: "Created review comment" } },
+      },
+    },
+    "/api/cli/comments/export": {
+      get: {
+        summary: "Export process-bound review threads from the CLI",
+        responses: { "200": { description: "JSON or Markdown export" } },
+      },
+    },
+    "/api/cli/approve/files": {
+      post: {
+        summary: "Atomically approve explicit current file fingerprints",
+        responses: { "200": { description: "Atomic file approvals" } },
+      },
+    },
+    "/api/cli/approve/workspace": {
+      post: {
+        summary: "Approve the current active workspace snapshot",
+        responses: { "200": { description: "New workspace snapshot" } },
       },
     },
     "/api/diff": {
@@ -397,6 +405,24 @@ const openApiDocument = {
         },
       },
     },
+    "/api/comments/{id}/replies": {
+      post: {
+        summary: "Append an immutable user reply to a review thread",
+        responses: {
+          "200": { description: "Updated versioned review thread" },
+          "409": { description: "Stale thread version" },
+        },
+      },
+    },
+    "/api/comments/{id}/reopen": {
+      post: {
+        summary: "Reopen a resolved review thread from the application",
+        responses: {
+          "200": { description: "Reopened versioned review thread" },
+          "409": { description: "Stale thread version" },
+        },
+      },
+    },
   },
   components: {
     schemas: {
@@ -430,6 +456,10 @@ const openApiDocument = {
           "createdAt",
           "fingerprint",
           "outdated",
+          "state",
+          "rootVersion",
+          "threadRevision",
+          "replies",
         ],
         properties: {
           id: { type: "string", format: "uuid" },
@@ -443,6 +473,33 @@ const openApiDocument = {
           createdAt: { type: "string", format: "date-time" },
           fingerprint: { type: "string" },
           outdated: { type: "boolean" },
+          state: {
+            type: "string",
+            enum: ["pending", "accepted", "rejected", "deferred"],
+          },
+          rootVersion: { type: "integer", minimum: 1 },
+          threadRevision: { type: "integer", minimum: 0 },
+          deleted: { type: "boolean" },
+          replies: {
+            type: "array",
+            items: { $ref: "#/components/schemas/ReviewReply" },
+          },
+        },
+      },
+      ReviewReply: {
+        type: "object",
+        required: ["id", "actor", "body", "createdAt"],
+        properties: {
+          id: { type: "string" },
+          actor: { type: "string", enum: ["user", "agent"] },
+          body: { type: "string", maxLength: 4000 },
+          createdAt: { type: "string", format: "date-time" },
+          decision: {
+            type: "string",
+            enum: ["accepted", "rejected", "deferred"],
+          },
+          requestId: { type: "string" },
+          answeredRoot: { type: "object" },
         },
       },
       CreateComment: {
@@ -542,6 +599,7 @@ const openApiDocument = {
           "branch",
           "head",
           "files",
+          "deferredFiles",
           "counts",
           "hiddenNoiseCount",
           "latestSnapshot",
@@ -553,6 +611,10 @@ const openApiDocument = {
           branch: { type: "string" },
           head: { type: "string" },
           files: {
+            type: "array",
+            items: { $ref: "#/components/schemas/ChangedFile" },
+          },
+          deferredFiles: {
             type: "array",
             items: { $ref: "#/components/schemas/ChangedFile" },
           },
@@ -635,57 +697,11 @@ const openApiDocument = {
       },
       Settings: {
         type: "object",
-        required: [
-          "version",
-          "diffContextLines",
-          "keyboardLayout",
-          "theme",
-          "typography",
-        ],
+        required: ["version", "diffContextLines", "keyboardLayout"],
         properties: {
           version: { type: "integer", const: 1 },
           diffContextLines: { type: "integer", minimum: 0, maximum: 20 },
           keyboardLayout: { type: "string", enum: ["normie", "vim"] },
-          theme: { $ref: "#/components/schemas/ThemePreference" },
-          typography: { $ref: "#/components/schemas/TypographyPreference" },
-        },
-      },
-      ThemePreference: {
-        type: "object",
-        additionalProperties: false,
-        required: ["version", "preset", "overrides"],
-        properties: {
-          version: { type: "integer", const: 1 },
-          preset: { type: "string", enum: ["redline", "dusk", "paper"] },
-          overrides: {
-            type: "object",
-            propertyNames: { enum: THEME_COLOR_ROLES },
-            additionalProperties: {
-              type: "string",
-              pattern: "^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
-            },
-          },
-        },
-      },
-      TypographyPreference: {
-        type: "object",
-        additionalProperties: false,
-        required: [
-          "version",
-          "uiFont",
-          "codeFont",
-          "interfaceFontSize",
-          "codeFontSize",
-        ],
-        properties: {
-          version: { type: "integer", const: 1 },
-          uiFont: { type: "string", enum: ["system", "humanist", "serif"] },
-          codeFont: {
-            type: "string",
-            enum: ["system", "modern", "compact"],
-          },
-          interfaceFontSize: { type: "integer", minimum: 12, maximum: 18 },
-          codeFontSize: { type: "integer", minimum: 12, maximum: 20 },
         },
       },
     },
@@ -717,13 +733,15 @@ function isLoopbackOrigin(origin: string) {
 interface BuildServerOptions {
   serveStatic?: boolean;
   clientDir?: string;
-  workspaceDir: string;
+  workspaceDir?: string;
 }
 
-export function buildServer(options: BuildServerOptions): FastifyInstance {
+export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: true });
-  const workspace = new ReviewWorkspace(options.workspaceDir);
-  app.addHook("onReady", () => workspace.initialize());
+  const workspace = new ReviewWorkspace(
+    options.workspaceDir ?? process.env.REDLINE_WORKSPACE ?? process.cwd(),
+  );
+  const cliServerToken = randomUUID();
   app.addHook("onClose", () => workspace.close());
 
   const sendError = (reply: FastifyReply, error: unknown, statusCode = 400) => {
@@ -731,9 +749,22 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
       error instanceof Error
         ? error.message
         : "The local workspace request failed.";
-    return reply
-      .status(statusCode)
-      .send({ error: "Workspace request failed", message, statusCode });
+    const stableCodes = new Set([
+      "idempotency_conflict",
+      "invalid_input",
+      "invalid_state",
+      "not_found",
+      "stale_context",
+      "stale_root",
+      "stale_thread",
+      "workspace_mismatch",
+    ]);
+    return reply.status(statusCode).send({
+      error: "Workspace request failed",
+      message,
+      statusCode,
+      ...(stableCodes.has(message) ? { code: message } : {}),
+    });
   };
 
   app.addHook("onRequest", async (request, reply) => {
@@ -810,9 +841,6 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
       openWorkspace: { method: "POST", path: "/api/workspace/open" },
       settings: { method: "GET", path: "/api/settings" },
       updateSettings: { method: "PUT", path: "/api/settings" },
-      updateTheme: { method: "PUT", path: "/api/settings/theme" },
-      resetTheme: { method: "DELETE", path: "/api/settings/theme" },
-      updateTypography: { method: "PUT", path: "/api/settings/typography" },
       diff: { method: "GET", path: "/api/diff?path=<workspace-relative-path>" },
       reviewData: { method: "GET", path: "/api/review" },
       exportComments: {
@@ -824,6 +852,11 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
       approveSnapshot: { method: "POST", path: "/api/review/snapshot" },
       createComment: { method: "POST", path: "/api/comments" },
       deleteComment: { method: "DELETE", path: "/api/comments/:id" },
+      deferFile: { method: "POST", path: "/api/review/defer" },
+      restoreFile: { method: "POST", path: "/api/review/restore" },
+      cliDiscovery: { method: "GET", path: "/api/cli/discovery" },
+      agentReview: { method: "GET", path: "/api/cli/agent/review/:id" },
+      agentReviewAll: { method: "GET", path: "/api/cli/agent/review-all" },
     },
   }));
 
@@ -917,100 +950,6 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
       );
     } catch (error) {
       return sendError(reply, error);
-    }
-  });
-
-  app.put("/api/settings/theme", async (request, reply) => {
-    const body = request.body as {
-      workspaceRoot?: unknown;
-      preference?: unknown;
-    };
-    if (
-      !body ||
-      typeof body !== "object" ||
-      Array.isArray(body) ||
-      Object.keys(body).some(
-        (key) => !["workspaceRoot", "preference"].includes(key),
-      ) ||
-      typeof body.workspaceRoot !== "string" ||
-      !body.workspaceRoot
-    ) {
-      return sendError(
-        reply,
-        new Error("Theme updates require the active workspace identity."),
-      );
-    }
-    try {
-      return await workspace.updateThemePreference(
-        body.workspaceRoot,
-        body.preference,
-      );
-    } catch (error) {
-      return sendError(
-        reply,
-        error,
-        error instanceof ThemePreferenceRequestError ? 400 : 500,
-      );
-    }
-  });
-
-  app.delete("/api/settings/theme", async (_request, reply) => {
-    const body = _request.body as { workspaceRoot?: unknown };
-    if (
-      !body ||
-      typeof body !== "object" ||
-      Array.isArray(body) ||
-      Object.keys(body).some((key) => key !== "workspaceRoot") ||
-      typeof body.workspaceRoot !== "string" ||
-      !body.workspaceRoot
-    ) {
-      return sendError(
-        reply,
-        new Error("Theme reset requires the active workspace identity."),
-      );
-    }
-    try {
-      return await workspace.deleteThemePreference(body.workspaceRoot);
-    } catch (error) {
-      return sendError(
-        reply,
-        error,
-        error instanceof ThemePreferenceRequestError ? 400 : 500,
-      );
-    }
-  });
-
-  app.put("/api/settings/typography", async (request, reply) => {
-    const body = request.body as {
-      workspaceRoot?: unknown;
-      preference?: unknown;
-    };
-    if (
-      !body ||
-      typeof body !== "object" ||
-      Array.isArray(body) ||
-      Object.keys(body).some(
-        (key) => !["workspaceRoot", "preference"].includes(key),
-      ) ||
-      typeof body.workspaceRoot !== "string" ||
-      !body.workspaceRoot
-    ) {
-      return sendError(
-        reply,
-        new Error("Typography updates require the active workspace identity."),
-      );
-    }
-    try {
-      return await workspace.updateTypographyPreference(
-        body.workspaceRoot,
-        body.preference,
-      );
-    } catch (error) {
-      return sendError(
-        reply,
-        error,
-        error instanceof TypographyPreferenceRequestError ? 400 : 500,
-      );
     }
   });
 
@@ -1225,9 +1164,249 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     }
   });
 
-  const clientDir =
-    options.clientDir ??
-    fileURLToPath(new URL("../../client", import.meta.url));
+  app.post("/api/comments/:id/reopen", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = request.body as {
+      expectedState: "accepted" | "rejected" | "deferred";
+      expectedRootVersion: number;
+      expectedThreadRevision: number;
+      requestId: string;
+    };
+    try {
+      return await workspace.mutateThread({
+        ...body,
+        commentId: params.id,
+        reopen: true,
+      });
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+
+  app.post("/api/comments/:id/replies", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = request.body as {
+      expectedState: "pending" | "accepted" | "rejected" | "deferred";
+      expectedRootVersion: number;
+      expectedThreadRevision: number;
+      requestId: string;
+      body: string;
+    };
+    try {
+      return await workspace.mutateThread({ ...body, commentId: params.id });
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+
+  app.post("/api/review/defer", async (request, reply) => {
+    const body = request.body as { path?: unknown };
+    if (typeof body?.path !== "string")
+      return sendError(reply, new Error("Choose a changed file to defer."));
+    try {
+      return await workspace.deferFile(body.path);
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+
+  app.post("/api/review/restore", async (request, reply) => {
+    const body = request.body as { path?: unknown };
+    if (typeof body?.path !== "string")
+      return sendError(reply, new Error("Choose a deferred file to restore."));
+    try {
+      return await workspace.restoreFile(body.path);
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.get("/api/cli/discovery", async (_request, reply) => {
+    try {
+      const current = await workspace.getWorkspace(true);
+      return {
+        version: 1,
+        workspaceRoot: current.root,
+        serverToken: cliServerToken,
+      };
+    } catch (error) {
+      return sendError(reply, error, 503);
+    }
+  });
+
+  const verifyCliIdentity = (
+    request: { headers: Record<string, unknown> },
+    reply: FastifyReply,
+  ) => {
+    const expectedRoot = request.headers["x-redline-workspace"];
+    if (
+      request.headers["x-redline-server-token"] !== cliServerToken ||
+      typeof expectedRoot !== "string" ||
+      !expectedRoot
+    ) {
+      reply.status(409).send({
+        code: "workspace_mismatch",
+        message: "CLI discovery is stale.",
+      });
+      return null;
+    }
+    return expectedRoot;
+  };
+
+  app.get("/api/cli/review", async (request, reply) => {
+    const expectedRoot = verifyCliIdentity(request, reply);
+    if (!expectedRoot) return;
+    try {
+      return await workspace.withWorkspaceIdentity(expectedRoot, () =>
+        workspace.getReviewData(),
+      );
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+  app.get("/api/cli/diff", async (request, reply) => {
+    const expectedRoot = verifyCliIdentity(request, reply);
+    if (!expectedRoot) return;
+    const query = request.query as { path?: unknown };
+    if (typeof query.path !== "string")
+      return sendError(reply, new Error("A diff path is required."));
+    try {
+      return await workspace.withWorkspaceIdentity(expectedRoot, () =>
+        workspace.getDiff(query.path as string),
+      );
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+  app.get("/api/cli/comments/export", async (request, reply) => {
+    const expectedRoot = verifyCliIdentity(request, reply);
+    if (!expectedRoot) return;
+    const query = request.query as { format?: unknown };
+    try {
+      if (query.format === "markdown") {
+        return reply
+          .type("text/markdown; charset=utf-8")
+          .send(
+            await workspace.withWorkspaceIdentity(expectedRoot, () =>
+              workspace.getReviewMarkdown(),
+            ),
+          );
+      }
+      return await workspace.withWorkspaceIdentity(expectedRoot, () =>
+        workspace.getCommentExport(),
+      );
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+  app.post("/api/cli/comments", async (request, reply) => {
+    const expectedRoot = verifyCliIdentity(request, reply);
+    if (!expectedRoot) return;
+    const body = request.body as {
+      path: string;
+      fingerprint: string;
+      anchors: Array<{
+        side: "old" | "new";
+        startLine: number;
+        endLine: number;
+      }>;
+      body: string;
+    };
+    try {
+      return await workspace.withWorkspaceIdentity(expectedRoot, () =>
+        workspace.addComment({
+          path: body.path,
+          expectedFingerprint: body.fingerprint,
+          anchors: body.anchors,
+          body: body.body,
+        }),
+      );
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+  app.post("/api/cli/approve/files", async (request, reply) => {
+    const expectedRoot = verifyCliIdentity(request, reply);
+    if (!expectedRoot) return;
+    const body = request.body as {
+      files: Array<{ path: string; fingerprint: string }>;
+    };
+    try {
+      return await workspace.withWorkspaceIdentity(expectedRoot, () =>
+        workspace.approveFiles(body.files),
+      );
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+  app.post("/api/cli/approve/workspace", async (request, reply) => {
+    const expectedRoot = verifyCliIdentity(request, reply);
+    if (!expectedRoot) return;
+    try {
+      return await workspace.withWorkspaceIdentity(expectedRoot, () =>
+        workspace.approveSnapshot(),
+      );
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+  app.get("/api/cli/agent/review/:id", async (request, reply) => {
+    const expectedRoot = verifyCliIdentity(request, reply);
+    if (!expectedRoot) return;
+    const params = request.params as { id: string };
+    try {
+      return await workspace.withWorkspaceIdentity(expectedRoot, () =>
+        workspace.getThreadPacket(params.id),
+      );
+    } catch (error) {
+      return sendError(reply, error, 404);
+    }
+  });
+  app.get("/api/cli/agent/review-all", async (request, reply) => {
+    const expectedRoot = verifyCliIdentity(request, reply);
+    if (!expectedRoot) return;
+    try {
+      return await workspace.withWorkspaceIdentity(expectedRoot, async () => ({
+        version: 1,
+        comments: await workspace.getPendingThreadPackets(),
+      }));
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+  app.post("/api/cli/agent/respond/:id", async (request, reply) => {
+    const expectedRoot = verifyCliIdentity(request, reply);
+    if (!expectedRoot) return;
+    const params = request.params as { id: string };
+    try {
+      return await workspace.withWorkspaceIdentity(expectedRoot, () =>
+        workspace.mutateThread({
+          ...(request.body as Parameters<ReviewWorkspace["mutateThread"]>[0]),
+          commentId: params.id,
+        }),
+      );
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+  app.post("/api/cli/agent/reopen/:id", async (request, reply) => {
+    const expectedRoot = verifyCliIdentity(request, reply);
+    if (!expectedRoot) return;
+    const params = request.params as { id: string };
+    try {
+      return await workspace.withWorkspaceIdentity(expectedRoot, () =>
+        workspace.mutateThread({
+          ...(request.body as Parameters<ReviewWorkspace["mutateThread"]>[0]),
+          commentId: params.id,
+          reopen: true,
+        }),
+      );
+    } catch (error) {
+      return sendError(reply, error, 409);
+    }
+  });
+
+  const clientDir = options.clientDir ?? resolve(process.cwd(), "dist/client");
   const shouldServeStatic = options.serveStatic ?? existsSync(clientDir);
 
   if (shouldServeStatic) {

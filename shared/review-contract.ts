@@ -33,6 +33,49 @@ export interface ReviewComment {
   createdAt: string;
   fingerprint: string;
   outdated: boolean;
+  state: ReviewThreadState;
+  rootVersion: number;
+  threadRevision: number;
+  replies: ReviewReply[];
+  deleted?: boolean;
+}
+
+export type ReviewThreadState =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "deferred";
+export type ReviewDecision = Exclude<ReviewThreadState, "pending">;
+
+export interface ReviewReply {
+  id: string;
+  actor: "user" | "agent";
+  body: string;
+  createdAt: string;
+  decision?: ReviewDecision;
+  requestId?: string;
+  answeredRoot?: {
+    path: string;
+    body: string;
+    anchors: ReviewAnchor[];
+    fingerprint: string;
+    rootVersion: number;
+  };
+}
+
+export interface ReviewThreadPacket {
+  version: 1;
+  workspaceRoot: string;
+  comment: ReviewComment;
+  currentFingerprint: string | null;
+  acceptedContext: {
+    workspaceRoot: string;
+    commentId: string;
+    rootVersion: number;
+    threadRevision: number;
+    path: string;
+    fingerprint: string | null;
+  };
 }
 
 export interface ReviewDataResponse {
@@ -60,10 +103,6 @@ export interface ReviewSettings {
   diffContextLines: number;
   /** Keyboard interaction vocabulary used by the review surface. */
   keyboardLayout: "normie" | "vim";
-  /** Validated workspace-local visual theme preference. */
-  theme: ThemePreference;
-  /** Validated, atomically persisted workspace-local typography preference. */
-  typography: TypographyPreference;
 }
 
 export interface ChangedFile {
@@ -95,6 +134,7 @@ export interface WorkspaceResponse {
   branch: string;
   head: string;
   files: ChangedFile[];
+  deferredFiles: ChangedFile[];
   hiddenNoiseCount: number;
   counts: {
     total: number;
@@ -151,5 +191,3 @@ export interface FilesApprovalResponse {
   approvedAt: string;
   approvals: FileApprovalResult[];
 }
-import type { ThemePreference } from "./theme.js";
-import type { TypographyPreference } from "./typography.js";

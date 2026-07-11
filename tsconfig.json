@@ -18,6 +18,7 @@
   "include": [
     "src/**/*",
     "server/**/*",
+    "cli/**/*",
     "shared/**/*",
     "tests/**/*",
     "playwright/**/*",
