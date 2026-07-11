@@ -1,0 +1,278 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-10T20:42:00-04:00",
+  "title": "Design System: Redline",
+  "extensions": {
+    "colorMeta": {
+      "midnight-canvas": {
+        "role": "neutral",
+        "displayName": "Midnight Canvas",
+        "canonical": "oklch(0.145 0.008 270)",
+        "tonalRamp": ["oklch(0.15 0.008 270)", "oklch(0.25 0.008 270)", "oklch(0.35 0.008 270)", "oklch(0.45 0.008 270)", "oklch(0.55 0.008 270)", "oklch(0.65 0.008 270)", "oklch(0.78 0.007 270)", "oklch(0.92 0.004 270)"]
+      },
+      "graphite-paper": {
+        "role": "neutral",
+        "displayName": "Graphite Paper",
+        "canonical": "oklch(0.175 0.009 270)",
+        "tonalRamp": ["oklch(0.15 0.009 270)", "oklch(0.25 0.009 270)", "oklch(0.35 0.009 270)", "oklch(0.45 0.009 270)", "oklch(0.55 0.009 270)", "oklch(0.65 0.009 270)", "oklch(0.78 0.007 270)", "oklch(0.92 0.004 270)"]
+      },
+      "raised-graphite": {
+        "role": "neutral",
+        "displayName": "Raised Graphite",
+        "canonical": "oklch(0.215 0.011 270)",
+        "tonalRamp": ["oklch(0.15 0.011 270)", "oklch(0.25 0.011 270)", "oklch(0.35 0.011 270)", "oklch(0.45 0.011 270)", "oklch(0.55 0.011 270)", "oklch(0.65 0.01 270)", "oklch(0.78 0.007 270)", "oklch(0.92 0.004 270)"]
+      },
+      "graphite-hover": {
+        "role": "neutral",
+        "displayName": "Graphite Hover",
+        "canonical": "oklch(0.235 0.013 270)",
+        "tonalRamp": ["oklch(0.15 0.013 270)", "oklch(0.25 0.013 270)", "oklch(0.35 0.013 270)", "oklch(0.45 0.013 270)", "oklch(0.55 0.013 270)", "oklch(0.65 0.011 270)", "oklch(0.78 0.008 270)", "oklch(0.92 0.004 270)"]
+      },
+      "proof-ink": {
+        "role": "neutral",
+        "displayName": "Proof Ink",
+        "canonical": "oklch(0.91 0.006 270)",
+        "tonalRamp": ["oklch(0.15 0.006 270)", "oklch(0.25 0.006 270)", "oklch(0.35 0.006 270)", "oklch(0.45 0.006 270)", "oklch(0.55 0.006 270)", "oklch(0.65 0.006 270)", "oklch(0.78 0.005 270)", "oklch(0.92 0.003 270)"]
+      },
+      "soft-ink": {
+        "role": "neutral",
+        "displayName": "Soft Ink",
+        "canonical": "oklch(0.76 0.008 270)",
+        "tonalRamp": ["oklch(0.15 0.008 270)", "oklch(0.25 0.008 270)", "oklch(0.35 0.008 270)", "oklch(0.45 0.008 270)", "oklch(0.55 0.008 270)", "oklch(0.65 0.008 270)", "oklch(0.78 0.006 270)", "oklch(0.92 0.003 270)"]
+      },
+      "muted-ink": {
+        "role": "neutral",
+        "displayName": "Muted Ink",
+        "canonical": "oklch(0.63 0.01 270)",
+        "tonalRamp": ["oklch(0.15 0.01 270)", "oklch(0.25 0.01 270)", "oklch(0.35 0.01 270)", "oklch(0.45 0.01 270)", "oklch(0.55 0.01 270)", "oklch(0.65 0.009 270)", "oklch(0.78 0.006 270)", "oklch(0.92 0.003 270)"]
+      },
+      "quiet-rule": {
+        "role": "neutral",
+        "displayName": "Quiet Rule",
+        "canonical": "oklch(0.275 0.012 270)",
+        "tonalRamp": ["oklch(0.15 0.012 270)", "oklch(0.25 0.012 270)", "oklch(0.35 0.012 270)", "oklch(0.45 0.012 270)", "oklch(0.55 0.012 270)", "oklch(0.65 0.01 270)", "oklch(0.78 0.007 270)", "oklch(0.92 0.004 270)"]
+      },
+      "strong-rule": {
+        "role": "neutral",
+        "displayName": "Strong Rule",
+        "canonical": "oklch(0.38 0.015 270)",
+        "tonalRamp": ["oklch(0.15 0.015 270)", "oklch(0.25 0.015 270)", "oklch(0.35 0.015 270)", "oklch(0.45 0.015 270)", "oklch(0.55 0.015 270)", "oklch(0.65 0.012 270)", "oklch(0.78 0.008 270)", "oklch(0.92 0.004 270)"]
+      },
+      "red-pencil": {
+        "role": "primary",
+        "displayName": "Red Pencil",
+        "canonical": "oklch(0.65 0.19 25)",
+        "tonalRamp": ["oklch(0.15 0.04 25)", "oklch(0.25 0.08 25)", "oklch(0.35 0.12 25)", "oklch(0.45 0.16 25)", "oklch(0.55 0.19 25)", "oklch(0.65 0.19 25)", "oklch(0.78 0.13 25)", "oklch(0.92 0.04 25)"]
+      },
+      "bright-red-pencil": {
+        "role": "primary",
+        "displayName": "Bright Red Pencil",
+        "canonical": "oklch(0.74 0.15 25)",
+        "tonalRamp": ["oklch(0.15 0.035 25)", "oklch(0.25 0.07 25)", "oklch(0.35 0.1 25)", "oklch(0.45 0.13 25)", "oklch(0.55 0.15 25)", "oklch(0.65 0.15 25)", "oklch(0.78 0.12 25)", "oklch(0.92 0.04 25)"]
+      },
+      "red-pencil-wash": {
+        "role": "primary",
+        "displayName": "Red Pencil Wash",
+        "canonical": "oklch(0.255 0.055 25)",
+        "tonalRamp": ["oklch(0.15 0.025 25)", "oklch(0.25 0.055 25)", "oklch(0.35 0.055 25)", "oklch(0.45 0.055 25)", "oklch(0.55 0.055 25)", "oklch(0.65 0.05 25)", "oklch(0.78 0.035 25)", "oklch(0.92 0.015 25)"]
+      },
+      "approval-green": {
+        "role": "secondary",
+        "displayName": "Approval Green",
+        "canonical": "oklch(0.71 0.12 154)",
+        "tonalRamp": ["oklch(0.15 0.025 154)", "oklch(0.25 0.05 154)", "oklch(0.35 0.075 154)", "oklch(0.45 0.1 154)", "oklch(0.55 0.12 154)", "oklch(0.65 0.12 154)", "oklch(0.78 0.09 154)", "oklch(0.92 0.03 154)"]
+      },
+      "approval-wash": {
+        "role": "secondary",
+        "displayName": "Approval Wash",
+        "canonical": "oklch(0.235 0.04 154)",
+        "tonalRamp": ["oklch(0.15 0.02 154)", "oklch(0.25 0.04 154)", "oklch(0.35 0.04 154)", "oklch(0.45 0.04 154)", "oklch(0.55 0.04 154)", "oklch(0.65 0.035 154)", "oklch(0.78 0.025 154)", "oklch(0.92 0.01 154)"]
+      },
+      "changed-violet": {
+        "role": "tertiary",
+        "displayName": "Changed Violet",
+        "canonical": "oklch(0.73 0.12 300)",
+        "tonalRamp": ["oklch(0.15 0.025 300)", "oklch(0.25 0.05 300)", "oklch(0.35 0.075 300)", "oklch(0.45 0.1 300)", "oklch(0.55 0.12 300)", "oklch(0.65 0.12 300)", "oklch(0.78 0.09 300)", "oklch(0.92 0.03 300)"]
+      },
+      "changed-wash": {
+        "role": "tertiary",
+        "displayName": "Changed Wash",
+        "canonical": "oklch(0.25 0.05 300)",
+        "tonalRamp": ["oklch(0.15 0.025 300)", "oklch(0.25 0.05 300)", "oklch(0.35 0.05 300)", "oklch(0.45 0.05 300)", "oklch(0.55 0.05 300)", "oklch(0.65 0.045 300)", "oklch(0.78 0.03 300)", "oklch(0.92 0.012 300)"]
+      },
+      "added-field": {
+        "role": "secondary",
+        "displayName": "Added Field",
+        "canonical": "oklch(0.19 0.022 151)",
+        "tonalRamp": ["oklch(0.15 0.02 151)", "oklch(0.25 0.022 151)", "oklch(0.35 0.022 151)", "oklch(0.45 0.022 151)", "oklch(0.55 0.022 151)", "oklch(0.65 0.02 151)", "oklch(0.78 0.014 151)", "oklch(0.92 0.006 151)"]
+      },
+      "removed-field": {
+        "role": "primary",
+        "displayName": "Removed Field",
+        "canonical": "oklch(0.2 0.026 25)",
+        "tonalRamp": ["oklch(0.15 0.02 25)", "oklch(0.25 0.026 25)", "oklch(0.35 0.026 25)", "oklch(0.45 0.026 25)", "oklch(0.55 0.026 25)", "oklch(0.65 0.022 25)", "oklch(0.78 0.015 25)", "oklch(0.92 0.006 25)"]
+      },
+      "on-red-pencil": {
+        "role": "neutral",
+        "displayName": "On Red Pencil",
+        "canonical": "oklch(0.97 0.006 25)",
+        "tonalRamp": ["oklch(0.15 0.006 25)", "oklch(0.25 0.006 25)", "oklch(0.35 0.006 25)", "oklch(0.45 0.006 25)", "oklch(0.55 0.006 25)", "oklch(0.65 0.006 25)", "oklch(0.78 0.005 25)", "oklch(0.92 0.003 25)"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Page Display", "purpose": "Rare settings-page thesis headings only." },
+      "headline": { "displayName": "Workspace Headline", "purpose": "Workspace and panel identity." },
+      "title": { "displayName": "Section Title", "purpose": "Settings and section titles." },
+      "body": { "displayName": "Reading Body", "purpose": "Sustained prose, editable text, comments, and source code." },
+      "ui": { "displayName": "Product UI", "purpose": "Controls, filenames, compact helper copy, and navigation." },
+      "label": { "displayName": "Evidence Label", "purpose": "Paths, state, counts, shortcuts, and metadata." }
+    },
+    "shadows": [
+      { "name": "overlay", "value": "0 8px 24px oklch(0.08 0.008 270 / 0.34)", "purpose": "Drawers, review overlays, and the floating line-selection toolbar." },
+      { "name": "segmented-selection", "value": "0 1px 4px oklch(0.08 0.008 270 / 0.28)", "purpose": "Minute separation for the active option inside a segmented control." }
+    ],
+    "motion": [
+      { "name": "state-shift", "value": "180ms cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Toggle position and color changes." },
+      { "name": "refresh-spin", "value": "700ms linear", "purpose": "Refresh activity only." },
+      { "name": "skeleton-pulse", "value": "900ms ease-in-out alternate", "purpose": "Loading placeholders only." },
+      { "name": "reduced-motion", "value": "0.01ms", "purpose": "Effective removal of transitions and animation when reduced motion is requested." }
+    ],
+    "breakpoints": [
+      { "name": "compact-toolbar", "value": "40rem" },
+      { "name": "file-rail", "value": "56rem" },
+      { "name": "settings-columns", "value": "48rem" },
+      { "name": "three-rail", "value": "80rem" },
+      { "name": "coarse-pointer", "value": "pointer: coarse" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Snapshot Action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The largest commitment control, reserved for approving the complete visible snapshot.",
+      "html": "<button class=\"ds-snapshot-button\"><span class=\"ds-snapshot-mark\"><svg aria-hidden=\"true\" viewBox=\"0 0 20 20\"><path d=\"m4 10.5 3.5 3.5L16 5.5\"/></svg></span><span><strong>Approve current snapshot</strong><small>Does not stage or commit</small></span></button>",
+      "css": ".ds-snapshot-button { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:.65rem; width:100%; min-height:3.5rem; padding:.55rem .7rem; border:0; border-radius:.5rem; background:var(--accent); color:var(--on-accent); font:inherit; text-align:left; cursor:pointer; } .ds-snapshot-button:hover { background:var(--accent-strong); } .ds-snapshot-button:focus-visible { outline:2px solid var(--focus); outline-offset:2px; } .ds-snapshot-button:active { transform:translateY(1px); } .ds-snapshot-button span:nth-child(2) { display:grid; gap:.08rem; } .ds-snapshot-button strong { font-size:.875rem; } .ds-snapshot-button small { color:oklch(.92 .018 25); font-size:.75rem; } .ds-snapshot-mark { display:grid; place-items:center; width:1.65rem; height:1.65rem; border-radius:50%; background:oklch(.67 .14 25); } .ds-snapshot-mark svg { width:1rem; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.5; }"
+    },
+    {
+      "name": "Secondary Review Action",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A compact bordered action for approving one file or toggling a supporting panel.",
+      "html": "<button class=\"ds-review-action\">Approve file</button>",
+      "css": ".ds-review-action { min-height:1.75rem; padding:0 .6rem; border:1px solid var(--line-strong); border-radius:.4rem; background:var(--paper); color:var(--ink-soft); font:600 .875rem/1.4 Inter,ui-sans-serif,sans-serif; cursor:pointer; } .ds-review-action:hover { border-color:var(--success); color:var(--success); } .ds-review-action:focus-visible { outline:2px solid var(--focus); outline-offset:2px; } .ds-review-action:active { transform:translateY(1px); } .ds-review-action:disabled { cursor:not-allowed; opacity:.5; }"
+    },
+    {
+      "name": "Compact Search Field",
+      "kind": "input",
+      "refersTo": "input-compact",
+      "description": "A dark embedded search field for files or the active diff.",
+      "html": "<label class=\"ds-search\"><svg aria-hidden=\"true\" viewBox=\"0 0 20 20\"><circle cx=\"8.5\" cy=\"8.5\" r=\"5\"/><path d=\"m12.3 12.3 4 4\"/></svg><input placeholder=\"Find in diff\" /></label>",
+      "css": ".ds-search { display:flex; align-items:center; gap:.5rem; min-height:2.25rem; padding:0 .7rem; border:1px solid var(--line); border-radius:.42rem; background:var(--canvas); color:var(--ink-muted); } .ds-search:focus-within { outline:2px solid var(--focus); outline-offset:2px; } .ds-search svg { width:1rem; fill:none; stroke:currentColor; stroke-linecap:round; stroke-width:1.5; } .ds-search input { min-width:0; width:100%; border:0; outline:0; background:transparent; color:var(--ink); font:400 .875rem/1.4 Inter,ui-sans-serif,sans-serif; } .ds-search input::placeholder { color:var(--ink-muted); }"
+    },
+    {
+      "name": "Review Status Capsule",
+      "kind": "chip",
+      "refersTo": "status-current",
+      "description": "An explicit semantic label for snapshot and file state.",
+      "html": "<span class=\"ds-status ds-status-current\">Holds</span><span class=\"ds-status ds-status-changed\">Changed</span>",
+      "css": ".ds-status { display:inline-block; padding:.25rem .45rem; border-radius:999px; font:700 .75rem/1.4 SFMono-Regular,Cascadia Code,monospace; letter-spacing:.04em; text-transform:uppercase; } .ds-status-current { background:var(--success-soft); color:var(--success); } .ds-status-changed { margin-left:.4rem; background:var(--warning-soft); color:var(--warning); }"
+    },
+    {
+      "name": "Active File Row",
+      "kind": "nav",
+      "description": "The selected queue item, combining file identity, review state, and compact metadata.",
+      "html": "<button class=\"ds-file-row\"><span class=\"ds-file-mark\">M</span><span class=\"ds-file-copy\"><strong>App.tsx</strong><small>src/</small></span><span class=\"ds-file-meta\">+24 −8</span></button>",
+      "css": ".ds-file-row { display:grid; grid-template-columns:1rem minmax(0,1fr) auto; align-items:center; gap:.55rem; width:100%; min-height:2.45rem; padding:.3rem .4rem; border:1px solid var(--line); border-radius:.42rem; background:var(--paper-deep); color:var(--ink-soft); text-align:left; cursor:pointer; } .ds-file-row:hover { background:var(--paper-hover); } .ds-file-row:focus-visible { outline:2px solid var(--focus); outline-offset:2px; } .ds-file-mark { color:var(--accent); font:700 1rem/1 SFMono-Regular,Cascadia Code,monospace; } .ds-file-copy { display:grid; min-width:0; gap:.06rem; } .ds-file-copy strong { overflow:hidden; font:600 .875rem/1.4 Inter,ui-sans-serif,sans-serif; text-overflow:ellipsis; white-space:nowrap; } .ds-file-copy small { color:var(--ink-muted); font-size:.75rem; } .ds-file-meta { color:var(--ink-muted); font:400 .75rem/1.4 SFMono-Regular,Cascadia Code,monospace; }"
+    },
+    {
+      "name": "Visible Queue Approval",
+      "kind": "button",
+      "description": "Atomic approval for two or more reviewable files in the current filtered queue.",
+      "html": "<button class=\"ds-visible-approval\"><svg aria-hidden=\"true\" viewBox=\"0 0 20 20\"><path d=\"m4 10.5 3.5 3.5L16 5.5\"/></svg><span><strong>Approve 6 visible files</strong><small>Current filtered queue. Does not stage or commit.</small></span></button>",
+      "css": ".ds-visible-approval { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:.55rem; width:100%; min-height:2.75rem; padding:.45rem .55rem; border:1px solid var(--line-strong); border-radius:.42rem; background:var(--paper-deep); color:var(--ink-soft); font-family:Inter,ui-sans-serif,sans-serif; text-align:left; cursor:pointer; } .ds-visible-approval:hover { border-color:var(--success); background:var(--success-soft); color:var(--success); } .ds-visible-approval:focus-visible { outline:2px solid var(--focus); outline-offset:2px; } .ds-visible-approval svg { width:1rem; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.5; } .ds-visible-approval span { display:grid; gap:.08rem; } .ds-visible-approval strong { font-size:.875rem; font-weight:600; } .ds-visible-approval small { color:var(--ink-muted); font-size:.75rem; line-height:1.4; }"
+    },
+    {
+      "name": "Vim Mode Guide",
+      "kind": "custom",
+      "description": "A visible modal-state strip for cursor-driven Vim navigation with a hidden browser scrollbar and six-line scroll margin.",
+      "html": "<div class=\"ds-vim-guide\"><strong>Visual line</strong><span><kbd>J</kbd><kbd>K</kbd> move</span><span><kbd>V</kbd> finish selection</span><span><kbd>C</kbd> comment</span><span><kbd>A</kbd> approve</span><span><kbd>Esc</kbd> exit</span></div>",
+      "css": ".ds-vim-guide { display:flex; align-items:center; flex-wrap:wrap; gap:.45rem .9rem; min-height:2.15rem; padding:.35rem 1rem; border-bottom:1px solid var(--line); background:var(--paper-deep); color:var(--ink-muted); font:400 .75rem/1.4 Inter,ui-sans-serif,sans-serif; } .ds-vim-guide strong { color:var(--accent-strong); font-family:SFMono-Regular,Cascadia Code,monospace; text-transform:uppercase; } .ds-vim-guide span { display:inline-flex; align-items:center; gap:.22rem; }"
+    },
+    {
+      "name": "Comment Record",
+      "kind": "card",
+      "description": "A local evidence record with exact line metadata and restrained destructive action.",
+      "html": "<article class=\"ds-comment\"><header><span>New lines 42 to 45</span><time>Just now</time></header><p>Handle the empty workspace before rendering this branch.</p><button>Delete note</button></article>",
+      "css": ".ds-comment { padding:.65rem; border:1px solid var(--line); border-radius:.42rem; background:var(--canvas); color:var(--ink-soft); } .ds-comment header { display:flex; justify-content:space-between; gap:.75rem; color:var(--ink-muted); font:400 .75rem/1.4 SFMono-Regular,Cascadia Code,monospace; } .ds-comment p { margin:.45rem 0; color:var(--ink-soft); font:400 1rem/1.6 Inter,ui-sans-serif,sans-serif; } .ds-comment button { padding:0; border:0; background:transparent; color:var(--ink-muted); font:400 .75rem/1.4 Inter,ui-sans-serif,sans-serif; text-decoration:underline; cursor:pointer; } .ds-comment button:hover { color:var(--ink); } .ds-comment button:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }"
+    },
+    {
+      "name": "Selected Diff Line",
+      "kind": "custom",
+      "description": "The signature source row, with secondary line numbers and a restrained selected field.",
+      "html": "<div class=\"ds-diff-line\"><button>42</button><span>+</span><code><b>const</b> ready = <i>true</i>;</code></div>",
+      "css": ".ds-diff-line { display:grid; grid-template-columns:2.8rem 1rem minmax(0,1fr); align-items:stretch; min-height:1.625rem; background:var(--accent-soft); color:var(--ink-soft); font:400 1rem/1.6 SFMono-Regular,Cascadia Code,Liberation Mono,monospace; } .ds-diff-line button { border:0; border-right:1px solid var(--line); background:transparent; color:var(--ink-muted); font:inherit; cursor:pointer; } .ds-diff-line button:hover { color:var(--ink); } .ds-diff-line button:focus-visible { outline:2px solid var(--focus); outline-offset:-2px; } .ds-diff-line > span { color:var(--accent-strong); text-align:center; } .ds-diff-line code { padding:0 .5rem; color:var(--syntax-text); white-space:pre; } .ds-diff-line b { color:var(--syntax-keyword); font-weight:inherit; } .ds-diff-line i { color:var(--syntax-constant); font-style:normal; }"
+    },
+    {
+      "name": "First Review Guidance",
+      "kind": "custom",
+      "description": "Dismissible inline teaching for line selection, keyboard movement, and narrow-screen panning.",
+      "html": "<div class=\"ds-review-hint\"><svg aria-hidden=\"true\" viewBox=\"0 0 20 20\"><path d=\"M4 4.5h12v8H9l-4.5 3v-3H4z\"/></svg><span><strong>Select line numbers to leave a note.</strong>Use J and K to move between files, or / to search.</span><button>Got it</button></div>",
+      "css": ".ds-review-hint { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:start; gap:.75rem; padding:.7rem 1rem; border-bottom:1px solid var(--line); background:var(--accent-quiet); color:var(--ink-soft); font:400 .875rem/1.4 Inter,ui-sans-serif,sans-serif; } .ds-review-hint svg { width:1rem; fill:none; stroke:var(--accent-strong); stroke-linecap:round; stroke-linejoin:round; stroke-width:1.5; } .ds-review-hint span { display:grid; gap:.12rem; } .ds-review-hint strong { color:var(--ink); } .ds-review-hint button { min-height:2rem; padding:0 .6rem; border:1px solid var(--line-strong); border-radius:.35rem; background:transparent; color:var(--ink-soft); font:600 .75rem/1.4 Inter,ui-sans-serif,sans-serif; cursor:pointer; } .ds-review-hint button:hover { background:var(--paper-deep); color:var(--ink); } .ds-review-hint button:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }"
+    },
+    {
+      "name": "Undo Notice",
+      "kind": "custom",
+      "description": "Focused, time-bounded recovery after removing review evidence.",
+      "html": "<div class=\"ds-undo\"><span>Review note removed from <strong>src/App.tsx</strong>.</span><button>Undo</button></div>",
+      "css": ".ds-undo { display:flex; align-items:center; gap:1rem; max-width:32rem; padding:.7rem .75rem; border:1px solid var(--line-strong); border-radius:.5rem; background:var(--paper-deep); color:var(--ink-soft); font:400 .875rem/1.4 Inter,ui-sans-serif,sans-serif; box-shadow:0 8px 24px oklch(.08 .008 270 / .34); } .ds-undo span { min-width:0; overflow-wrap:anywhere; } .ds-undo button { min-height:2rem; padding:0 .65rem; border:0; border-radius:.35rem; background:var(--ink); color:var(--paper); font:600 .875rem/1.4 Inter,ui-sans-serif,sans-serif; cursor:pointer; } .ds-undo button:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Proof Desk",
+    "overview": "Redline feels like a dedicated proofing desk used by a developer during a long review session in a dim room. The dark theme is a deliberate low-eye-strain environment, not a stylistic shortcut. Cool graphite surfaces hold steady while restrained red-pencil marks identify the few moments that require action.\n\nThe system is precise, calm, and deliberate. Dense information is welcome when it supports inspection, but every region has one job and every state has an explicit label. The interface earns trust through stable rails, exact alignment, quiet borders, and controls that behave like familiar instruments.\n\nIt rejects the visual language of a generic SaaS dashboard, a cheerful collaboration product, and a full IDE. It also rejects decorative cards, workflow sprawl, playful language, and controls unrelated to inspection.",
+    "keyCharacteristics": [
+      "Dark graphite surfaces tuned for sustained low-light reading.",
+      "One red-pencil accent reserved for selection, attention, and primary commitment.",
+      "Compact, keyboard-first controls with visible focus and explicit state labels.",
+      "Structural rails and dividers instead of floating card grids.",
+      "Monospaced metadata for paths, counts, line numbers, and machine state.",
+      "Responsive structure that turns rails into focus-managed overlays below their desktop thresholds."
+    ],
+    "rules": [
+      { "name": "The Fixed Desk Rule", "body": "The diff is the work surface. Navigation and review history support it without competing for visual priority.", "section": "overview" },
+      { "name": "The Low-Strain Rule", "body": "Large areas remain low-chroma and low-contrast. High chroma is rare, semantic, and never used as decoration.", "section": "overview" },
+      { "name": "The Red Pencil Rule", "body": "Red Pencil occupies no more than ten percent of a screen. Its rarity is what makes it authoritative.", "section": "colors" },
+      { "name": "The State Has a Name Rule", "body": "Approval, changed, error, and warning states always include text or an icon. Color alone never carries meaning.", "section": "colors" },
+      { "name": "The Quiet Code Rule", "body": "Diff backgrounds carry additions and removals; syntax color remains subordinate to the change itself.", "section": "colors" },
+      { "name": "The Evidence First Rule", "body": "Source code is the largest sustained text on the review screen. Interface chrome never grows loud enough to challenge it.", "section": "typography" },
+      { "name": "The Mono Means Exact Rule", "body": "Use monospace for paths, counts, line numbers, fingerprints, shortcuts, timestamps, and state metadata. Do not use it as atmosphere.", "section": "typography" },
+      { "name": "The Flat Desk Rule", "body": "Surfaces at rest are flat. If a stationary desktop region needs a shadow to separate it, its tonal layer or divider is wrong.", "section": "elevation" },
+      { "name": "The Overlay Earns Lift Rule", "body": "Shadows are permitted only when a surface physically covers another surface or floats above the diff.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do preserve the dark theme and cool graphite surface ladder for low eye strain during sustained review.",
+      "Do keep sustained prose and source code at 1rem, controls at 0.875rem, and secondary labels no smaller than 0.75rem.",
+      "Do keep Red Pencil rare and attach it to selection, attention, or commitment.",
+      "Do use one-pixel rules and tonal layers to define structure.",
+      "Do keep the diff visually primary and source code more prominent than surrounding chrome.",
+      "Do label every semantic state with copy or iconography in addition to color.",
+      "Do preserve visible focus, keyboard navigation, focus-managed overlays, reduced-motion behavior, and 2.75rem coarse-pointer targets.",
+      "Do use familiar controls with consistent hover, focus, active, disabled, loading, and error behavior.",
+      "Do keep first-use teaching contextual, dismissible, and replayable through persistent shortcut help.",
+      "Do provide inline undo for destructive review-history actions."
+    ],
+    "donts": [
+      "Don't make Redline resemble a generic SaaS dashboard.",
+      "Don't make it feel like a cheerful collaboration product or a full IDE.",
+      "Don't add decorative cards, identical card grids, nested cards, or a card wrapper around every region.",
+      "Don't introduce workflow sprawl, playful language, or controls unrelated to inspection.",
+      "Don't use gradients, gradient text, glassmorphism, neon accents, or saturated inactive states.",
+      "Don't use a colored side stripe thicker than one pixel on records, alerts, or list items.",
+      "Don't invent display typography for product chrome or use monospace merely to look technical.",
+      "Don't communicate review status through color alone.",
+      "Don't add decorative motion. Motion exists only to explain state, loading, or overlay movement.",
+      "Don't reach for a modal first. Prefer stable rails, inline disclosure, or the established focus-managed drawers."
+    ]
+  }
+}
