@@ -1,10 +1,19 @@
-import { buildServer } from './app.js';
+import { buildServer } from "./app.js";
+import { resolveStartupWorkspace } from "./startup-workspace.js";
 
-const host = '127.0.0.1';
-const port = Number(process.env.PORT ?? '4322');
+const host = "127.0.0.1";
+const port = Number(process.env.PORT ?? "4322");
+const startupDirectory = process.cwd();
+const workspaceDir = resolveStartupWorkspace(
+  process.env.REDLINE_WORKSPACE,
+  startupDirectory,
+);
 
 async function start() {
-  const app = buildServer({ serveStatic: process.env.NODE_ENV === 'production' });
+  const app = buildServer({
+    serveStatic: process.env.NODE_ENV === "production",
+    workspaceDir,
+  });
 
   try {
     await app.listen({ host, port });
