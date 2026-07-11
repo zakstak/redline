@@ -3,14 +3,15 @@ import { fileURLToPath } from "node:url";
 import { buildServer } from "../server/app.js";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
 
-let app = buildServer();
+const workspaceDir = process.cwd();
+let app = buildServer({ workspaceDir });
 const fixtureClientDir = fileURLToPath(
   new URL("./fixtures/client", import.meta.url),
 );
 
 afterEach(async () => {
   await app.close();
-  app = buildServer();
+  app = buildServer({ workspaceDir });
 });
 
 describe("GET /api/health", () => {
@@ -30,7 +31,11 @@ describe("GET /api/health", () => {
 
 describe("static bootstrap serving", () => {
   it("serves the built shell for the root route", async () => {
-    app = buildServer({ clientDir: fixtureClientDir, serveStatic: true });
+    app = buildServer({
+      clientDir: fixtureClientDir,
+      serveStatic: true,
+      workspaceDir,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -43,7 +48,11 @@ describe("static bootstrap serving", () => {
   });
 
   it("publishes a local API index instead of falling through to the SPA", async () => {
-    app = buildServer({ clientDir: fixtureClientDir, serveStatic: true });
+    app = buildServer({
+      clientDir: fixtureClientDir,
+      serveStatic: true,
+      workspaceDir,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -188,7 +197,11 @@ describe("static bootstrap serving", () => {
   });
 
   it("returns a 404 json payload for missing assets", async () => {
-    app = buildServer({ clientDir: fixtureClientDir, serveStatic: true });
+    app = buildServer({
+      clientDir: fixtureClientDir,
+      serveStatic: true,
+      workspaceDir,
+    });
 
     const response = await app.inject({
       method: "GET",

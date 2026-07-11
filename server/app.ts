@@ -3,6 +3,7 @@ import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
 import { ReviewWorkspace } from "./review-workspace.js";
 
@@ -652,14 +653,13 @@ function isLoopbackOrigin(origin: string) {
 interface BuildServerOptions {
   serveStatic?: boolean;
   clientDir?: string;
-  workspaceDir?: string;
+  workspaceDir: string;
 }
 
-export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
+export function buildServer(options: BuildServerOptions): FastifyInstance {
   const app = Fastify({ logger: true });
-  const workspace = new ReviewWorkspace(
-    options.workspaceDir ?? process.env.REDLINE_WORKSPACE ?? process.cwd(),
-  );
+  const workspace = new ReviewWorkspace(options.workspaceDir);
+  app.addHook("onReady", () => workspace.initialize());
   app.addHook("onClose", () => workspace.close());
 
   const sendError = (reply: FastifyReply, error: unknown, statusCode = 400) => {
@@ -1118,7 +1118,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
   });
 
-  const clientDir = options.clientDir ?? resolve(process.cwd(), "dist/client");
+  const clientDir =
+    options.clientDir ??
+    fileURLToPath(new URL("../../client", import.meta.url));
   const shouldServeStatic = options.serveStatic ?? existsSync(clientDir);
 
   if (shouldServeStatic) {

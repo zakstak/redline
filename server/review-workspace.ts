@@ -503,19 +503,30 @@ export class ReviewWorkspace {
   }
 
   async initialize() {
-    await this.openWorkspace(this.root);
+    await this.activateWorkspace(this.root);
   }
 
   async openWorkspace(requestedPath: string) {
+    await this.activateWorkspace(requestedPath);
+    return this.getWorkspace();
+  }
+
+  private async activateWorkspace(requestedPath: string) {
     const candidate = isAbsolute(requestedPath)
       ? requestedPath
       : resolve(this.root, requestedPath);
-    const root = (
-      await git(candidate, ["rev-parse", "--show-toplevel"])
-    ).trim();
-    const gitDir = (
-      await git(root, ["rev-parse", "--absolute-git-dir"])
-    ).trim();
+    let root: string;
+    let gitDir: string;
+    try {
+      root = (await git(candidate, ["rev-parse", "--show-toplevel"])).trim();
+      gitDir = (await git(root, ["rev-parse", "--absolute-git-dir"])).trim();
+    } catch (error) {
+      throw new Error(
+        `Redline could not open the selected workspace "${resolve(candidate)}". ` +
+          "Launch Redline from a Git worktree or set REDLINE_WORKSPACE to a valid Git workspace.",
+        { cause: error },
+      );
+    }
     const operation = this.enqueueExclusive(async () => {
       const targetStorePath = this.storePath(gitDir);
       const targetDatabasePath = this.databasePath(gitDir);
@@ -549,7 +560,6 @@ export class ReviewWorkspace {
       if (this.workspaceSwitchPromise === switchPromise)
         this.workspaceSwitchPromise = null;
     }
-    return this.getWorkspace();
   }
 
   close() {

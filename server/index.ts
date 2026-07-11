@@ -11,6 +11,7 @@ const workspaceDir = resolveStartupWorkspace(
 
 async function start() {
   const app = buildServer({
+    serveStatic: process.env.NODE_ENV === "production",
     workspaceDir,
   });
 
