@@ -168,6 +168,10 @@ const generatedPathPatterns = [
   /\.map$/i,
 ];
 
+const isolatedGitEnvironment = Object.fromEntries(
+  Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+);
+
 const languageByExtension: Record<string, string> = {
   ".css": "css",
   ".go": "go",
@@ -202,6 +206,7 @@ function git(
       {
         cwd: root,
         encoding: "utf8",
+        env: isolatedGitEnvironment,
         maxBuffer: 48 * 1024 * 1024,
         windowsHide: true,
       },

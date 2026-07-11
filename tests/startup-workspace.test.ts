@@ -7,7 +7,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildServer } from "../server/app.js";
 import { resolveStartupWorkspace } from "../server/startup-workspace.js";
 
-const exec = promisify(execFile);
+const executeFile = promisify(execFile);
+const isolatedGitEnvironment = Object.fromEntries(
+  Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+);
+
+function exec(file: string, args: string[], options: { cwd: string }) {
+  return executeFile(file, args, { ...options, env: isolatedGitEnvironment });
+}
 const apps: ReturnType<typeof buildServer>[] = [];
 const temporaryDirectories: string[] = [];
 
