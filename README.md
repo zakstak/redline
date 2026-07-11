@@ -17,14 +17,7 @@ npm run dev
 ```
 
 Open `http://127.0.0.1:4322`. Vite serves the client on port 4322 and proxies
-`/api` to the Fastify server on port 4323. By default, the server reviews the
-Git workspace represented by its working directory at startup. Because
-`npm run dev` starts the server from this package directory, use an explicit
-override to review another workspace:
-
-```sh
-REDLINE_WORKSPACE=/path/to/workspace npm run dev
-```
+`/api` to the Fastify server on port 4323.
 
 To run the production build:
 
@@ -33,24 +26,9 @@ npm run build
 npm start
 ```
 
-The production server listens on `127.0.0.1:4322` by default. A direct
-production launch can use the target Git workspace as the server process working
-directory:
-
-```sh
-cd /path/to/workspace
-node /path/to/redline/dist/server/server/index.js
-```
-
-The workspace precedence is exact: a nonblank `REDLINE_WORKSPACE` overrides the
-server process working directory captured at startup. An unset, empty, or
-whitespace-only override uses that captured directory. A nonblank invalid
-override fails startup instead of falling back. An outer caller shell directory
-is not used when a wrapper changes the server process working directory.
-
-Set `PORT` to choose another loopback port. For `npm start`, which runs from
-this package directory, use `REDLINE_WORKSPACE=/path/to/workspace npm start` to
-review a different repository.
+The production server listens on `127.0.0.1:4322` by default. Set `PORT` to
+choose another loopback port and `REDLINE_WORKSPACE` to choose the initial Git
+workspace.
 
 ## What it does
 
@@ -67,6 +45,8 @@ review a different repository.
 - Offers a workspace-level keyboard layout: Normie keeps familiar browser
   controls, while Vim adds modal, cursor-driven diff navigation with visual-line
   selection and a six-line scroll margin.
+- Applies accessible named themes and validated semantic color overrides
+  immediately, with serialized autosave per workspace.
 - Watches the worktree and Git metadata, with browser polling as a fallback.
 - Exposes structured review data and Markdown exports to local agents.
 
@@ -99,6 +79,15 @@ Useful discovery endpoints:
   pairs.
 - `GET /api/comments/export?format=json|markdown` exports comments.
 - `GET /api/events` streams workspace changes with server-sent events.
+- `PUT /api/settings/theme` validates and saves a
+  `{ workspaceRoot, preference }` theme update.
+- `DELETE /api/settings/theme` deletes the active workspace theme using the same
+  workspace identity precondition.
+
+Theme preferences use a strict versioned preset-plus-overrides contract. Both
+the browser and server evaluate the same WCAG contrast matrix. Invalid drafts
+remain editable in the protected Settings surface but never apply or persist;
+workspace reset returns to the Redline preset.
 
 Create a comment with the fingerprint returned by `/api/diff` and one or more
 side-aware ranges:

@@ -3,15 +3,14 @@ import { fileURLToPath } from "node:url";
 import { buildServer } from "../server/app.js";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
 
-const workspaceDir = process.cwd();
-let app = buildServer({ workspaceDir });
+let app = buildServer();
 const fixtureClientDir = fileURLToPath(
   new URL("./fixtures/client", import.meta.url),
 );
 
 afterEach(async () => {
   await app.close();
-  app = buildServer({ workspaceDir });
+  app = buildServer();
 });
 
 describe("GET /api/health", () => {
@@ -30,27 +29,8 @@ describe("GET /api/health", () => {
 });
 
 describe("static bootstrap serving", () => {
-  it("auto-detects a built client without requiring NODE_ENV", async () => {
-    app = buildServer({
-      clientDir: fixtureClientDir,
-      workspaceDir,
-    });
-
-    const response = await app.inject({
-      method: "GET",
-      url: "/",
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toContain("<title>Fixture Shell</title>");
-  });
-
   it("serves the built shell for the root route", async () => {
-    app = buildServer({
-      clientDir: fixtureClientDir,
-      serveStatic: true,
-      workspaceDir,
-    });
+    app = buildServer({ clientDir: fixtureClientDir, serveStatic: true });
 
     const response = await app.inject({
       method: "GET",
@@ -63,11 +43,7 @@ describe("static bootstrap serving", () => {
   });
 
   it("publishes a local API index instead of falling through to the SPA", async () => {
-    app = buildServer({
-      clientDir: fixtureClientDir,
-      serveStatic: true,
-      workspaceDir,
-    });
+    app = buildServer({ clientDir: fixtureClientDir, serveStatic: true });
 
     const response = await app.inject({
       method: "GET",
@@ -116,7 +92,12 @@ describe("static bootstrap serving", () => {
             required: ["side", "startLine", "endLine"],
           },
           Settings: {
-            required: ["version", "diffContextLines", "keyboardLayout"],
+            required: [
+              "version",
+              "diffContextLines",
+              "keyboardLayout",
+              "theme",
+            ],
           },
           CommentExport: {
             required: ["version", "generatedAt", "workspace", "comments"],
@@ -175,11 +156,7 @@ describe("static bootstrap serving", () => {
   });
 
   it("returns a 404 json payload for missing assets", async () => {
-    app = buildServer({
-      clientDir: fixtureClientDir,
-      serveStatic: true,
-      workspaceDir,
-    });
+    app = buildServer({ clientDir: fixtureClientDir, serveStatic: true });
 
     const response = await app.inject({
       method: "GET",

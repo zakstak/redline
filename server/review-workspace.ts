@@ -39,6 +39,7 @@ import type {
   WorkspaceSnapshotSummary,
 } from "../shared/review-contract.js";
 import { ReviewDatabase } from "./review-database.js";
+import { parseThemePreference, type ThemePreference } from "../shared/theme.js";
 
 interface StatusEntry {
   path: string;
@@ -502,30 +503,19 @@ export class ReviewWorkspace {
   }
 
   async initialize() {
-    await this.activateWorkspace(this.root);
+    await this.openWorkspace(this.root);
   }
 
   async openWorkspace(requestedPath: string) {
-    await this.activateWorkspace(requestedPath);
-    return this.getWorkspace();
-  }
-
-  private async activateWorkspace(requestedPath: string) {
     const candidate = isAbsolute(requestedPath)
       ? requestedPath
       : resolve(this.root, requestedPath);
-    let root: string;
-    let gitDir: string;
-    try {
-      root = (await git(candidate, ["rev-parse", "--show-toplevel"])).trim();
-      gitDir = (await git(root, ["rev-parse", "--absolute-git-dir"])).trim();
-    } catch (error) {
-      throw new Error(
-        `Redline could not open the selected workspace "${resolve(candidate)}". ` +
-          "Launch Redline from a Git worktree or set REDLINE_WORKSPACE to a valid Git workspace.",
-        { cause: error },
-      );
-    }
+    const root = (
+      await git(candidate, ["rev-parse", "--show-toplevel"])
+    ).trim();
+    const gitDir = (
+      await git(root, ["rev-parse", "--absolute-git-dir"])
+    ).trim();
     const operation = this.enqueueExclusive(async () => {
       const targetStorePath = this.storePath(gitDir);
       const targetDatabasePath = this.databasePath(gitDir);
@@ -559,6 +549,7 @@ export class ReviewWorkspace {
       if (this.workspaceSwitchPromise === switchPromise)
         this.workspaceSwitchPromise = null;
     }
+    return this.getWorkspace();
   }
 
   close() {
@@ -1417,6 +1408,61 @@ export class ReviewWorkspace {
         diffContextLines,
         keyboardLayout,
       );
+    });
+  }
+
+  async updateThemePreference(
+    expectedWorkspaceRoot: string,
+    value: unknown,
+  ): Promise<ReviewSettings> {
+    await this.ensureInitialized();
+    if (resolve(expectedWorkspaceRoot) !== this.root) {
+      throw new Error(
+        "The active workspace changed before its theme could be saved.",
+      );
+    }
+    const theme = parseThemePreference(value);
+    if (!theme) {
+      throw new Error(
+        "Theme preference must use a known preset, valid colors, and pass essential contrast checks.",
+      );
+    }
+    const generation = this.workspaceGeneration;
+    return this.enqueueExclusive(() => {
+      if (
+        generation !== this.workspaceGeneration ||
+        resolve(expectedWorkspaceRoot) !== this.root
+      ) {
+        throw new Error(
+          "The active workspace changed before its theme could be saved.",
+        );
+      }
+      return this.reviewDatabase().updateThemePreference(
+        theme satisfies ThemePreference,
+      );
+    });
+  }
+
+  async deleteThemePreference(
+    expectedWorkspaceRoot: string,
+  ): Promise<ReviewSettings> {
+    await this.ensureInitialized();
+    if (resolve(expectedWorkspaceRoot) !== this.root) {
+      throw new Error(
+        "The active workspace changed before its theme could be reset.",
+      );
+    }
+    const generation = this.workspaceGeneration;
+    return this.enqueueExclusive(() => {
+      if (
+        generation !== this.workspaceGeneration ||
+        resolve(expectedWorkspaceRoot) !== this.root
+      ) {
+        throw new Error(
+          "The active workspace changed before its theme could be reset.",
+        );
+      }
+      return this.reviewDatabase().deleteThemePreference();
     });
   }
 

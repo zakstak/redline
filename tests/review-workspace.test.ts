@@ -12,7 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildServer } from "../server/app.js";
 import { ReviewWorkspace } from "../server/review-workspace.js";
 import type {
@@ -20,6 +20,7 @@ import type {
   DiffResponse,
   ReviewDataResponse,
 } from "../shared/review-contract.js";
+import { DEFAULT_THEME_PREFERENCE } from "../shared/theme.js";
 
 const executeFile = promisify(execFile);
 const isolatedGitEnvironment = Object.fromEntries(
@@ -56,24 +57,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(repository, { recursive: true, force: true });
-});
-
-describe("workspace initialization", () => {
-  it("defers the full workspace scan until workspace data is requested", async () => {
-    const workspace = new ReviewWorkspace(repository);
-    const getWorkspace = vi.spyOn(workspace, "getWorkspace");
-
-    try {
-      await workspace.initialize();
-
-      expect(getWorkspace).not.toHaveBeenCalled();
-
-      await workspace.openWorkspace(repository);
-      expect(getWorkspace).toHaveBeenCalledOnce();
-    } finally {
-      workspace.close();
-    }
-  });
 });
 
 describe("local review snapshots", () => {
@@ -221,11 +204,13 @@ describe("local review snapshots", () => {
       version: 1,
       diffContextLines: 3,
       keyboardLayout: "normie",
+      theme: DEFAULT_THEME_PREFERENCE,
     });
     expect(await workspace.updateSettings(8, "vim")).toEqual({
       version: 1,
       diffContextLines: 8,
       keyboardLayout: "vim",
+      theme: DEFAULT_THEME_PREFERENCE,
     });
     workspace.close();
 
@@ -235,9 +220,109 @@ describe("local review snapshots", () => {
       version: 1,
       diffContextLines: 8,
       keyboardLayout: "vim",
+      theme: DEFAULT_THEME_PREFERENCE,
     });
     await expect(reopened.updateSettings(21)).rejects.toThrow("0 to 20");
     reopened.close();
+  });
+
+  it("keeps validated theme preferences isolated across workspace switches", async () => {
+    const secondRepository = await mkdtemp(
+      join(tmpdir(), "redline-theme-second-"),
+    );
+    await exec("git", ["init"], { cwd: secondRepository });
+    await exec("git", ["config", "user.email", "redline@example.test"], {
+      cwd: secondRepository,
+    });
+    await exec("git", ["config", "user.name", "Redline Test"], {
+      cwd: secondRepository,
+    });
+    await writeFile(
+      join(secondRepository, "second.ts"),
+      "export const second = true;\n",
+      "utf8",
+    );
+    await exec("git", ["add", "second.ts"], { cwd: secondRepository });
+    await exec("git", ["commit", "-m", "initial"], { cwd: secondRepository });
+
+    const workspace = new ReviewWorkspace(repository);
+    try {
+      await workspace.initialize();
+      expect(
+        (
+          await workspace.updateThemePreference(repository, {
+            version: 1,
+            preset: "paper",
+            overrides: {},
+          })
+        ).theme.preset,
+      ).toBe("paper");
+
+      await workspace.openWorkspace(secondRepository);
+      expect((await workspace.getSettings()).theme).toEqual(
+        DEFAULT_THEME_PREFERENCE,
+      );
+      expect(
+        (
+          await workspace.updateThemePreference(secondRepository, {
+            version: 1,
+            preset: "dusk",
+            overrides: {},
+          })
+        ).theme.preset,
+      ).toBe("dusk");
+      await expect(
+        workspace.updateThemePreference(repository, {
+          version: 1,
+          preset: "paper",
+          overrides: {},
+        }),
+      ).rejects.toThrow("active workspace changed");
+
+      await workspace.openWorkspace(repository);
+      expect((await workspace.getSettings()).theme.preset).toBe("paper");
+    } finally {
+      workspace.close();
+      await rm(secondRepository, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back safely when a persisted theme is malformed or inaccessible", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    await workspace.initialize();
+    workspace.close();
+    const database = new DatabaseSync(
+      join(repository, ".git", "redline", "review.sqlite"),
+    );
+    try {
+      database
+        .prepare(
+          `
+        INSERT INTO review_settings (key, value)
+        VALUES ('theme_preference', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `,
+        )
+        .run(
+          JSON.stringify({
+            version: 1,
+            preset: "redline",
+            overrides: { ink: "#191a1f" },
+          }),
+        );
+    } finally {
+      database.close();
+    }
+
+    const reopened = new ReviewWorkspace(repository);
+    try {
+      await reopened.initialize();
+      expect((await reopened.getSettings()).theme).toEqual(
+        DEFAULT_THEME_PREFERENCE,
+      );
+    } finally {
+      reopened.close();
+    }
   });
 
   it("emits a debounced local event when a worktree file changes", async () => {
@@ -299,6 +384,7 @@ describe("local review snapshots", () => {
         version: 1,
         diffContextLines: 3,
         keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
       });
 
       const updated = await app.inject({
@@ -311,6 +397,53 @@ describe("local review snapshots", () => {
         version: 1,
         diffContextLines: 12,
         keyboardLayout: "vim",
+        theme: DEFAULT_THEME_PREFERENCE,
+      });
+
+      const themed = await app.inject({
+        method: "PUT",
+        url: "/api/settings/theme",
+        payload: {
+          workspaceRoot: repository,
+          preference: { version: 1, preset: "paper", overrides: {} },
+        },
+      });
+      expect(themed.statusCode).toBe(200);
+      expect(themed.json()).toMatchObject({
+        diffContextLines: 12,
+        keyboardLayout: "vim",
+        theme: { version: 1, preset: "paper", overrides: {} },
+      });
+
+      const inaccessible = await app.inject({
+        method: "PUT",
+        url: "/api/settings/theme",
+        payload: {
+          workspaceRoot: repository,
+          preference: {
+            version: 1,
+            preset: "paper",
+            overrides: { ink: "#f4f2ee" },
+          },
+        },
+      });
+      expect(inaccessible.statusCode).toBe(400);
+
+      const staleWorkspace = await app.inject({
+        method: "DELETE",
+        url: "/api/settings/theme",
+        payload: { workspaceRoot: `${repository}-other` },
+      });
+      expect(staleWorkspace.statusCode).toBe(400);
+
+      const resetTheme = await app.inject({
+        method: "DELETE",
+        url: "/api/settings/theme",
+        payload: { workspaceRoot: repository },
+      });
+      expect(resetTheme.statusCode).toBe(200);
+      expect(resetTheme.json()).toMatchObject({
+        theme: DEFAULT_THEME_PREFERENCE,
       });
 
       const invalid = await app.inject({

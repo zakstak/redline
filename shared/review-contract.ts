@@ -1,7 +1,13 @@
-export type ReviewStatus = 'unreviewed' | 'approved' | 'changed';
-export type ChangeKind = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'type-changed';
-export type DiffSide = 'old' | 'new';
-export type DiffApiLineType = 'context' | 'add' | 'remove' | 'hunk' | 'meta';
+export type ReviewStatus = "unreviewed" | "approved" | "changed";
+export type ChangeKind =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "type-changed";
+export type DiffSide = "old" | "new";
+export type DiffApiLineType = "context" | "add" | "remove" | "hunk" | "meta";
 
 export interface ReviewAnchor {
   side: DiffSide;
@@ -53,7 +59,9 @@ export interface ReviewSettings {
   /** Unchanged lines shown before and after each changed hunk. */
   diffContextLines: number;
   /** Keyboard interaction vocabulary used by the review surface. */
-  keyboardLayout: 'normie' | 'vim';
+  keyboardLayout: "normie" | "vim";
+  /** Validated workspace-local visual theme preference. */
+  theme: ThemePreference;
 }
 
 export interface ChangedFile {
@@ -98,7 +106,7 @@ export interface WorkspaceResponse {
 }
 
 export interface WorkspaceChangeEvent {
-  type: 'workspace-changed';
+  type: "workspace-changed";
   sequence: number;
   observedAt: string;
   /** Workspace-relative paths only. An empty array means the platform did not report a path. */
@@ -141,3 +149,4 @@ export interface FilesApprovalResponse {
   approvedAt: string;
   approvals: FileApprovalResult[];
 }
+import type { ThemePreference } from "./theme.js";
