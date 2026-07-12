@@ -132,6 +132,10 @@ const executeCommand: CommandExecutor = (
   { cwd, timeoutMs, stdoutLimit, stderrLimit, signal },
 ) =>
   new Promise((resolveResult, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("cancelled"));
+      return;
+    }
     const child = spawn(command, args, {
       cwd,
       env: commandEnvironment(),
@@ -209,7 +213,10 @@ export function parseGitHubRemote(value: string): GitHubIdentity | null {
         !["https:", "ssh:", "git:"].includes(url.protocol)
       )
         return null;
-      const parts = url.pathname.replace(/^\//, "").split("/");
+      const parts = url.pathname
+        .replace(/^\//, "")
+        .replace(/\/$/, "")
+        .split("/");
       if (parts.length !== 2) return null;
       owner = parts[0] ?? "";
       name = (parts[1] ?? "").replace(/\.git$/i, "");
@@ -305,6 +312,11 @@ export function sanitizeGitHubMarkdown(value: string) {
       return line
         .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
         .replace(/!\[([^\]]*)\]\s*\[[^\]]*\]/g, "$1")
+        .replace(
+          /<((?:https?:\/\/|mailto:)[^<>]+)>/g,
+          (match, destination: string) =>
+            safeMarkdownDestination(destination) ? match : "",
+        )
         .replace(
           /<(?!https?:\/\/|mailto:|[^ <>@]+@[^ <>@]+\.[^ <>@]+>)[^>]*>/g,
           "",
@@ -1960,14 +1972,20 @@ export class GitHubImportManager {
   }
 
   private async avatarSlot() {
-    if (this.avatarActive >= 4)
+    if (this.avatarActive >= 4) {
       await new Promise<void>((resolveSlot) =>
         this.avatarWaiters.push(resolveSlot),
       );
-    this.avatarActive += 1;
+    } else {
+      this.avatarActive += 1;
+    }
+    let released = false;
     return () => {
-      this.avatarActive -= 1;
-      this.avatarWaiters.shift()?.();
+      if (released) return;
+      released = true;
+      const next = this.avatarWaiters.shift();
+      if (next) next();
+      else this.avatarActive -= 1;
     };
   }
 

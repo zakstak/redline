@@ -85,6 +85,7 @@ const diff: DiffResponse = {
 describe("GitHub import primitives", () => {
   it.each([
     "https://github.com/Owner/Repo.git",
+    "https://github.com/Owner/Repo.git/",
     "ssh://git@github.com/Owner/Repo.git",
     "git@github.com:Owner/Repo.git",
   ])("normalizes equivalent GitHub remotes: %s", (value) => {
@@ -191,6 +192,7 @@ describe("GitHub import primitives", () => {
           "![tracking](https://example.com/a.png)",
           "[relative](./file) [unsafe](javascript:evil) [safe](https://example.com)",
           "<https://example.com>",
+          "<https://user:token@example.com/private>",
           "```html",
           '<img src="example.png">',
           "```",
@@ -202,6 +204,7 @@ describe("GitHub import primitives", () => {
         "tracking",
         "relative unsafe [safe](https://example.com)",
         "<https://example.com>",
+        "",
         "```html",
         '<img src="example.png">',
         "```",
@@ -834,6 +837,18 @@ describe("GitHub import synchronization", () => {
     await expect(discovery).rejects.toThrow("cancelled");
   });
 
+  it("does not launch commands for an already-aborted identity proof", async () => {
+    const importer = new GitHubImportManager(repository, gitDir);
+    const internals = importer as unknown as {
+      discoverIdentity(signal: AbortSignal): Promise<unknown>;
+    };
+    const controller = new AbortController();
+    controller.abort();
+    await expect(internals.discoverIdentity(controller.signal)).rejects.toThrow(
+      "cancelled",
+    );
+  });
+
   it("does not cache a read proof across a git state change", async () => {
     const importer = new GitHubImportManager(repository, gitDir);
     let gitStateCalls = 0;
@@ -1001,5 +1016,36 @@ describe("GitHub import synchronization", () => {
     await expect(
       importer.getAvatar("https://example.com/avatar.png"),
     ).rejects.toThrow("invalid_avatar_url");
+  });
+
+  it("reserves released avatar slots for queued requests", async () => {
+    const importer = new GitHubImportManager(repository, gitDir);
+    const pending: Array<() => void> = [];
+    let active = 0;
+    let maximum = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          active += 1;
+          maximum = Math.max(maximum, active);
+          pending.push(() => {
+            active -= 1;
+            resolve(
+              new Response(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]), {
+                headers: { "content-type": "image/png" },
+              }),
+            );
+          });
+        }),
+    );
+    const requests = Array.from({ length: 5 }, (_, index) =>
+      importer.getAvatar(`https://avatars.githubusercontent.com/u/${index}`),
+    );
+    await vi.waitFor(() => expect(pending).toHaveLength(4));
+    pending.shift()?.();
+    await vi.waitFor(() => expect(pending).toHaveLength(4));
+    while (pending.length > 0) pending.shift()?.();
+    await Promise.all(requests);
+    expect(maximum).toBe(4);
   });
 });
