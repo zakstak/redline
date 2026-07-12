@@ -2,7 +2,6 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { isIP } from "node:net";
 import { resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -114,11 +113,8 @@ export function validateServerUrl(value: string): URL {
   const hostname = url.hostname.startsWith("[")
     ? url.hostname.slice(1, -1)
     : url.hostname;
-  const ip = isIP(hostname);
   const loopback =
-    hostname === "localhost" ||
-    (ip === 4 && hostname.startsWith("127.")) ||
-    (ip === 6 && hostname === "::1");
+    hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
   if (
     url.protocol !== "http:" ||
     !loopback ||

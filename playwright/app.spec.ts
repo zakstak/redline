@@ -544,6 +544,47 @@ test("undoes comment deletion before the server mutation is sent", async ({
   expect(deleteRequests).toBe(0);
 });
 
+test("renders persisted thread decisions and reply history", async ({
+  page,
+}) => {
+  const reviewed = {
+    ...diff,
+    comments: [
+      {
+        id: "55555555-5555-4555-8555-555555555555",
+        path: "src/App.tsx",
+        anchors: [{ side: "new" as const, startLine: 1, endLine: 1 }],
+        body: "Confirm the automation behavior.",
+        createdAt: "2026-07-12T13:00:00.000Z",
+        fingerprint: "app-v2",
+        outdated: false,
+        state: "accepted" as const,
+        rootVersion: 1,
+        threadRevision: 1,
+        replies: [
+          {
+            id: "reply-1",
+            actor: "agent" as const,
+            body: "Implemented with regression coverage.",
+            createdAt: "2026-07-12T13:05:00.000Z",
+            decision: "accepted" as const,
+          },
+        ],
+      },
+    ],
+  };
+  await mockReviewApi(page, reviewed);
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Snapshot 2$/ }).click();
+  await expect(page.getByLabel("Thread state: accepted")).toContainText(
+    "Thread accepted",
+  );
+  const history = page.getByRole("list", { name: "Thread replies" });
+  await expect(history).toContainText("Agent");
+  await expect(history).toContainText("accepted");
+  await expect(history).toContainText("Implemented with regression coverage.");
+});
+
 test("teaches the first review action once and keeps shortcuts available", async ({
   page,
 }) => {

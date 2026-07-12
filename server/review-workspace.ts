@@ -1112,7 +1112,16 @@ export class ReviewWorkspace {
     includeNoise = false,
   ): Promise<WorkspaceResponse> {
     await this.ensureInitialized();
-    const store = await this.readStore();
+    const generation = this.workspaceGeneration;
+    const root = this.root;
+    const storePath = this.storePath();
+    const persisted = await this.readPersistedStore(storePath);
+    const store: ReviewStore = {
+      version: 1,
+      approvals: safeRecord(persisted.approvals),
+      snapshots: persisted.snapshots,
+      deferredPaths: [...new Set(persisted.deferredPaths)],
+    };
     const [head, branch] = await Promise.all([
       this.currentHead(),
       git(this.root, ["branch", "--show-current"]).then(
@@ -1142,10 +1151,22 @@ export class ReviewWorkspace {
       [...store.deferredPaths].sort().join("\0")
     ) {
       await this.withStoreLock(async () => {
-        const currentStore = await this.readStore();
+        if (generation !== this.workspaceGeneration || root !== this.root)
+          return;
+        const currentPersisted = await this.readPersistedStore(storePath);
+        if (generation !== this.workspaceGeneration || root !== this.root)
+          return;
+        const currentStore: ReviewStore = {
+          version: 1,
+          approvals: safeRecord(currentPersisted.approvals),
+          snapshots: currentPersisted.snapshots,
+          deferredPaths: [...new Set(currentPersisted.deferredPaths)],
+        };
         deferred = reconcileDeferred(currentStore.deferredPaths);
         currentStore.deferredPaths = [...deferred].sort();
-        await this.writeStore(currentStore);
+        if (generation !== this.workspaceGeneration || root !== this.root)
+          return;
+        await this.writeStore(currentStore, storePath);
         store.deferredPaths = currentStore.deferredPaths;
       });
     }
@@ -1159,7 +1180,7 @@ export class ReviewWorkspace {
       deferred.has(file.path),
     );
     const latestStoredSnapshot = store.snapshots.at(-1);
-    const comments = reviewableFiles.reduce(
+    const comments = visibleFiles.reduce(
       (total, file) => total + file.commentCount,
       0,
     );

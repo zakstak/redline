@@ -3616,7 +3616,14 @@ export default function App() {
               </div>
               <button
                 className="copy-comments-button"
-                disabled={workspace.counts.comments === 0}
+                disabled={
+                  workspace.counts.comments +
+                    workspace.deferredFiles.reduce(
+                      (total, file) => total + file.commentCount,
+                      0,
+                    ) ===
+                  0
+                }
                 onClick={() => void copyComments()}
                 type="button"
               >
@@ -3698,18 +3705,46 @@ export default function App() {
                     )}
                   </header>
                   <p>{comment.body}</p>
+                  <p
+                    className="thread-state"
+                    aria-label={`Thread state: ${comment.state ?? "pending"}`}
+                  >
+                    {!comment.state || comment.state === "pending"
+                      ? "Pending review"
+                      : `Thread ${comment.state}`}
+                  </p>
+                  {(comment.replies?.length ?? 0) > 0 ? (
+                    <ol className="thread-replies" aria-label="Thread replies">
+                      {comment.replies?.map((reply) => (
+                        <li key={reply.id}>
+                          <div>
+                            <strong>
+                              {reply.actor === "agent" ? "Agent" : "You"}
+                            </strong>
+                            {reply.decision ? (
+                              <span>{reply.decision}</span>
+                            ) : null}
+                            <time>{formatRelativeTime(reply.createdAt)}</time>
+                          </div>
+                          <p>{reply.body}</p>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : null}
                   {comment.outdated ? (
                     <p className="stale-comment-note">
                       The file changed after this note. It stays on the reviewed
                       version and is not attached to the current line.
                     </p>
                   ) : null}
-                  <button
-                    onClick={() => scheduleCommentDeletion(comment)}
-                    type="button"
-                  >
-                    Delete note
-                  </button>
+                  {!comment.deleted ? (
+                    <button
+                      onClick={() => scheduleCommentDeletion(comment)}
+                      type="button"
+                    >
+                      Delete note
+                    </button>
+                  ) : null}
                 </article>
               )) ?? null}
               {displayedDiff &&

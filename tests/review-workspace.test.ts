@@ -378,6 +378,26 @@ describe("local review snapshots", () => {
     workspace.close();
   });
 
+  it("keeps deferred comments out of active queue counts", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    await workspace.initialize();
+    const diff = await workspace.getDiff("example.ts");
+    await workspace.addComment({
+      path: "example.ts",
+      expectedFingerprint: diff.fingerprint,
+      anchors: [{ side: "new", startLine: 1, endLine: 1 }],
+      body: "Deferred comment",
+    });
+    expect((await workspace.getWorkspace()).counts.comments).toBe(1);
+    const deferred = await workspace.deferFile("example.ts");
+    expect(deferred.counts.comments).toBe(0);
+    expect(deferred.deferredFiles[0]).toMatchObject({
+      path: "example.ts",
+      commentCount: 1,
+    });
+    workspace.close();
+  });
+
   it("migrates v1 comment rows without dropping local review notes", async () => {
     const stateDir = join(repository, ".git", "redline");
     await mkdir(stateDir, { recursive: true });
@@ -494,6 +514,51 @@ describe("local review snapshots", () => {
     });
     expect(await workspace.getPendingThreadPackets()).toEqual([]);
     workspace.close();
+  });
+
+  it("does not let the user reply endpoint smuggle an agent decision", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    await workspace.initialize();
+    const diff = await workspace.getDiff("example.ts");
+    const comment = await workspace.addComment({
+      path: "example.ts",
+      expectedFingerprint: diff.fingerprint,
+      anchors: [{ side: "new", startLine: 1, endLine: 1 }],
+      body: "Keep this pending for an agent.",
+    });
+    workspace.close();
+    const app = buildServer({ workspaceDir: repository });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/comments/${comment.id}/replies`,
+        headers: { "content-type": "application/json" },
+        payload: {
+          expectedState: "pending",
+          expectedRootVersion: 1,
+          expectedThreadRevision: 0,
+          requestId: "user-cannot-decide",
+          body: "This is only a user reply.",
+          decision: "rejected",
+          reopen: true,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        comment: {
+          state: "pending",
+          threadRevision: 1,
+          replies: [
+            expect.objectContaining({
+              actor: "user",
+              body: "This is only a user reply.",
+            }),
+          ],
+        },
+      });
+    } finally {
+      await app.close();
+    }
   });
 
   it("emits a debounced local event when a worktree file changes", async () => {
@@ -1667,6 +1732,90 @@ describe("local review snapshots", () => {
       await expect(readFile(secondStatePath, "utf8")).rejects.toMatchObject({
         code: "ENOENT",
       });
+      workspace.close();
+    } finally {
+      await rm(secondRepository, { recursive: true, force: true });
+    }
+  });
+
+  it("does not reconcile an old workspace deferred set into a newly opened store", async () => {
+    const secondRepository = await mkdtemp(
+      join(tmpdir(), "redline-deferred-switch-"),
+    );
+    try {
+      await exec("git", ["init"], { cwd: secondRepository });
+      await exec("git", ["config", "user.email", "redline@example.test"], {
+        cwd: secondRepository,
+      });
+      await exec("git", ["config", "user.name", "Redline Test"], {
+        cwd: secondRepository,
+      });
+      await writeFile(
+        join(secondRepository, "second.ts"),
+        "export const second = 1;\n",
+        "utf8",
+      );
+      await exec("git", ["add", "second.ts"], { cwd: secondRepository });
+      await exec("git", ["commit", "-m", "initial"], { cwd: secondRepository });
+      await writeFile(
+        join(secondRepository, "second.ts"),
+        "export const second = 2;\n",
+        "utf8",
+      );
+      const seed = new ReviewWorkspace(secondRepository);
+      await seed.initialize();
+      await seed.deferFile("second.ts");
+      seed.close();
+
+      const firstStateDir = join(repository, ".git", "redline");
+      await mkdir(firstStateDir, { recursive: true });
+      await writeFile(
+        join(firstStateDir, "state.json"),
+        JSON.stringify({
+          version: 1,
+          approvals: {},
+          snapshots: [],
+          deferredPaths: ["vanished.ts"],
+        }),
+        "utf8",
+      );
+      const workspace = new ReviewWorkspace(repository);
+      await workspace.initialize();
+      const internals = workspace as unknown as {
+        changedFiles: (...args: unknown[]) => Promise<unknown>;
+      };
+      const originalChangedFiles = internals.changedFiles.bind(workspace);
+      let release: (() => void) | undefined;
+      let started: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      let blocked = false;
+      internals.changedFiles = async (...args: unknown[]) => {
+        if (!blocked) {
+          blocked = true;
+          started?.();
+          await gate;
+        }
+        return originalChangedFiles(...args);
+      };
+      const staleRead = workspace.getWorkspace();
+      await entered;
+      const switching = workspace.openWorkspace(secondRepository);
+      while (workspace.getRoot() !== secondRepository)
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      release?.();
+      await Promise.allSettled([staleRead, switching]);
+      const secondStore = JSON.parse(
+        await readFile(
+          join(secondRepository, ".git", "redline", "state.json"),
+          "utf8",
+        ),
+      ) as { deferredPaths: string[] };
+      expect(secondStore.deferredPaths).toEqual(["second.ts"]);
       workspace.close();
     } finally {
       await rm(secondRepository, { recursive: true, force: true });

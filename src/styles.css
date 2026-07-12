@@ -2117,6 +2117,19 @@ kbd {
   line-height: 1.45;
 }
 
+.review-comment .thread-state {
+  color: var(--ink-muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+}
+
+.thread-replies { display: grid; gap: var(--space-sm); margin: var(--space-sm) 0; padding-left: 1.25rem; }
+.thread-replies li { padding-left: var(--space-xs); border-left: 2px solid var(--line-strong); }
+.thread-replies div { display: flex; gap: var(--space-sm); color: var(--ink-muted); font-size: var(--text-caption); }
+.thread-replies div span { color: var(--accent-strong); text-transform: capitalize; }
+.thread-replies div time { margin-left: auto; }
+
 .review-comment button {
   padding: 0;
   background: transparent;

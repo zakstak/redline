@@ -1419,7 +1419,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       body: string;
     };
     try {
-      return await workspace.mutateThread({ ...body, commentId: params.id });
+      return await workspace.mutateThread({
+        commentId: params.id,
+        expectedState: body.expectedState,
+        expectedRootVersion: body.expectedRootVersion,
+        expectedThreadRevision: body.expectedThreadRevision,
+        requestId: body.requestId,
+        body: body.body,
+      });
     } catch (error) {
       return sendError(reply, error, 409);
     }

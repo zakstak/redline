@@ -37,7 +37,6 @@ describe("redline CLI", () => {
     "http://localhost",
     "http://localhost:4322",
     "http://127.0.0.1",
-    "http://127.25.3.9:65535",
     "http://[::1]:4322",
   ])("accepts the safe loopback origin %s", (value) => {
     expect(validateServerUrl(value).protocol).toBe("http:");
@@ -46,6 +45,7 @@ describe("redline CLI", () => {
   it.each([
     "https://127.0.0.1",
     "http://0.0.0.0",
+    "http://127.25.3.9:65535",
     "http://192.168.1.2",
     "http://user@localhost",
     "http://localhost/path",
