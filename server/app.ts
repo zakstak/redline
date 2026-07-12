@@ -9,6 +9,7 @@ import { THEME_COLOR_ROLES } from "../shared/theme.js";
 import {
   ReviewWorkspace,
   ThemePreferenceRequestError,
+  TypographyPreferenceRequestError,
 } from "./review-workspace.js";
 
 const reviewAnchorSchema = {
@@ -192,6 +193,36 @@ const openApiDocument = {
         responses: {
           "200": { description: "Default workspace theme settings" },
           "400": { description: "Stale workspace identity" },
+        },
+      },
+    },
+    "/api/settings/typography": {
+      put: {
+        summary: "Validate and atomically save active workspace typography",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["workspaceRoot", "preference"],
+                properties: {
+                  workspaceRoot: { type: "string" },
+                  preference: {
+                    $ref: "#/components/schemas/TypographyPreference",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Updated workspace settings" },
+          "400": {
+            description: "Invalid typography or stale workspace identity",
+          },
+          "500": { description: "Typography persistence failed" },
         },
       },
     },
@@ -604,12 +635,19 @@ const openApiDocument = {
       },
       Settings: {
         type: "object",
-        required: ["version", "diffContextLines", "keyboardLayout", "theme"],
+        required: [
+          "version",
+          "diffContextLines",
+          "keyboardLayout",
+          "theme",
+          "typography",
+        ],
         properties: {
           version: { type: "integer", const: 1 },
           diffContextLines: { type: "integer", minimum: 0, maximum: 20 },
           keyboardLayout: { type: "string", enum: ["normie", "vim"] },
           theme: { $ref: "#/components/schemas/ThemePreference" },
+          typography: { $ref: "#/components/schemas/TypographyPreference" },
         },
       },
       ThemePreference: {
@@ -627,6 +665,27 @@ const openApiDocument = {
               pattern: "^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
             },
           },
+        },
+      },
+      TypographyPreference: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "version",
+          "uiFont",
+          "codeFont",
+          "interfaceFontSize",
+          "codeFontSize",
+        ],
+        properties: {
+          version: { type: "integer", const: 1 },
+          uiFont: { type: "string", enum: ["system", "humanist", "serif"] },
+          codeFont: {
+            type: "string",
+            enum: ["system", "modern", "compact"],
+          },
+          interfaceFontSize: { type: "integer", minimum: 12, maximum: 18 },
+          codeFontSize: { type: "integer", minimum: 12, maximum: 20 },
         },
       },
     },
@@ -753,6 +812,7 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
       updateSettings: { method: "PUT", path: "/api/settings" },
       updateTheme: { method: "PUT", path: "/api/settings/theme" },
       resetTheme: { method: "DELETE", path: "/api/settings/theme" },
+      updateTypography: { method: "PUT", path: "/api/settings/typography" },
       diff: { method: "GET", path: "/api/diff?path=<workspace-relative-path>" },
       reviewData: { method: "GET", path: "/api/review" },
       exportComments: {
@@ -916,6 +976,40 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
         reply,
         error,
         error instanceof ThemePreferenceRequestError ? 400 : 500,
+      );
+    }
+  });
+
+  app.put("/api/settings/typography", async (request, reply) => {
+    const body = request.body as {
+      workspaceRoot?: unknown;
+      preference?: unknown;
+    };
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      Object.keys(body).some(
+        (key) => !["workspaceRoot", "preference"].includes(key),
+      ) ||
+      typeof body.workspaceRoot !== "string" ||
+      !body.workspaceRoot
+    ) {
+      return sendError(
+        reply,
+        new Error("Typography updates require the active workspace identity."),
+      );
+    }
+    try {
+      return await workspace.updateTypographyPreference(
+        body.workspaceRoot,
+        body.preference,
+      );
+    } catch (error) {
+      return sendError(
+        reply,
+        error,
+        error instanceof TypographyPreferenceRequestError ? 400 : 500,
       );
     }
   });

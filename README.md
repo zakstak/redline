@@ -47,6 +47,8 @@ workspace.
   selection and a six-line scroll margin.
 - Applies accessible named themes and validated semantic color overrides
   immediately, with serialized autosave per workspace.
+- Keeps interface and code fonts and sizes independently adjustable with offline
+  stacks and atomic workspace-local persistence.
 - Watches the worktree and Git metadata, with browser polling as a fallback.
 - Exposes structured review data and Markdown exports to local agents.
 
@@ -83,6 +85,8 @@ Useful discovery endpoints:
   `{ workspaceRoot, preference }` theme update.
 - `DELETE /api/settings/theme` deletes the active workspace theme using the same
   workspace identity precondition.
+- `PUT /api/settings/typography` validates and atomically saves the complete
+  workspace typography preference.
 
 Theme preferences use a strict versioned preset-plus-overrides contract. Both
 the browser and server evaluate the same WCAG contrast matrix. Invalid drafts

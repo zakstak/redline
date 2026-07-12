@@ -22,6 +22,7 @@ import type {
   ReviewDataResponse,
 } from "../shared/review-contract.js";
 import { DEFAULT_THEME_PREFERENCE } from "../shared/theme.js";
+import { DEFAULT_TYPOGRAPHY_PREFERENCE } from "../shared/typography.js";
 
 const executeFile = promisify(execFile);
 const isolatedGitEnvironment = Object.fromEntries(
@@ -224,12 +225,14 @@ describe("local review snapshots", () => {
       diffContextLines: 3,
       keyboardLayout: "normie",
       theme: DEFAULT_THEME_PREFERENCE,
+      typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
     });
     expect(await workspace.updateSettings(8, "vim")).toEqual({
       version: 1,
       diffContextLines: 8,
       keyboardLayout: "vim",
       theme: DEFAULT_THEME_PREFERENCE,
+      typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
     });
     workspace.close();
 
@@ -240,6 +243,7 @@ describe("local review snapshots", () => {
       diffContextLines: 8,
       keyboardLayout: "vim",
       theme: DEFAULT_THEME_PREFERENCE,
+      typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
     });
     await expect(reopened.updateSettings(21)).rejects.toThrow("0 to 20");
     reopened.close();
@@ -276,10 +280,18 @@ describe("local review snapshots", () => {
           })
         ).theme.preset,
       ).toBe("paper");
+      await workspace.updateTypographyPreference(repository, {
+        ...DEFAULT_TYPOGRAPHY_PREFERENCE,
+        uiFont: "serif",
+        interfaceFontSize: 18,
+      });
 
       await workspace.openWorkspace(secondRepository);
       expect((await workspace.getSettings()).theme).toEqual(
         DEFAULT_THEME_PREFERENCE,
+      );
+      expect((await workspace.getSettings()).typography).toEqual(
+        DEFAULT_TYPOGRAPHY_PREFERENCE,
       );
       expect(
         (
@@ -300,6 +312,10 @@ describe("local review snapshots", () => {
 
       await workspace.openWorkspace(repository);
       expect((await workspace.getSettings()).theme.preset).toBe("paper");
+      expect((await workspace.getSettings()).typography).toMatchObject({
+        uiFont: "serif",
+        interfaceFontSize: 18,
+      });
     } finally {
       workspace.close();
       await rm(secondRepository, { recursive: true, force: true });
@@ -404,6 +420,7 @@ describe("local review snapshots", () => {
         diffContextLines: 3,
         keyboardLayout: "normie",
         theme: DEFAULT_THEME_PREFERENCE,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
       });
 
       const updated = await app.inject({
@@ -417,7 +434,72 @@ describe("local review snapshots", () => {
         diffContextLines: 12,
         keyboardLayout: "vim",
         theme: DEFAULT_THEME_PREFERENCE,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
       });
+
+      const typography = {
+        version: 1,
+        uiFont: "serif",
+        codeFont: "modern",
+        interfaceFontSize: 18,
+        codeFontSize: 12,
+      } as const;
+      const typographyUpdated = await app.inject({
+        method: "PUT",
+        url: "/api/settings/typography",
+        payload: { workspaceRoot: repository, preference: typography },
+      });
+      expect(typographyUpdated.statusCode).toBe(200);
+      expect(typographyUpdated.json()).toMatchObject({
+        diffContextLines: 12,
+        keyboardLayout: "vim",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography,
+      });
+      expect(
+        (
+          await app.inject({
+            method: "PUT",
+            url: "/api/settings/typography",
+            payload: {
+              workspaceRoot: repository,
+              preference: { ...typography, codeFontSize: 12.5 },
+            },
+          })
+        ).statusCode,
+      ).toBe(400);
+      expect(
+        (
+          await app.inject({
+            method: "PUT",
+            url: "/api/settings/typography",
+            payload: {
+              workspaceRoot: `${repository}-other`,
+              preference: typography,
+            },
+          })
+        ).statusCode,
+      ).toBe(400);
+
+      const typographyPersistenceFailure = vi
+        .spyOn(ReviewDatabase.prototype, "updateTypographyPreference")
+        .mockImplementationOnce(() => {
+          throw new Error("database is busy");
+        });
+      try {
+        const failedTypographyUpdate = await app.inject({
+          method: "PUT",
+          url: "/api/settings/typography",
+          payload: { workspaceRoot: repository, preference: typography },
+        });
+        expect(failedTypographyUpdate.statusCode).toBe(500);
+        expect(failedTypographyUpdate.json()).toMatchObject({
+          message: "database is busy",
+          statusCode: 500,
+        });
+      } finally {
+        typographyPersistenceFailure.mockRestore();
+      }
 
       const themed = await app.inject({
         method: "PUT",

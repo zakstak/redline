@@ -109,6 +109,7 @@ describe("static bootstrap serving", () => {
               overrides: { propertyNames: { enum: string[] } };
             };
           };
+          Settings: { properties: Record<string, unknown> };
         };
       };
     }>();
@@ -128,6 +129,7 @@ describe("static bootstrap serving", () => {
               "diffContextLines",
               "keyboardLayout",
               "theme",
+              "typography",
             ],
           },
           CommentExport: {
@@ -149,6 +151,12 @@ describe("static bootstrap serving", () => {
       document.components.schemas.ThemePreference.properties.overrides
         .propertyNames.enum,
     ).toEqual(THEME_COLOR_ROLES);
+    expect(document.components.schemas.Settings.properties).toMatchObject({
+      typography: { $ref: "#/components/schemas/TypographyPreference" },
+    });
+    expect(
+      document.components.schemas.ThemePreference.properties,
+    ).not.toHaveProperty("typography");
     expect(document.paths).toMatchObject({
       "/api/settings/theme": {
         put: {
@@ -174,6 +182,25 @@ describe("static bootstrap serving", () => {
             content: {
               "application/json": {
                 schema: { required: ["workspaceRoot"] },
+              },
+            },
+          },
+        },
+      },
+      "/api/settings/typography": {
+        put: {
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  required: ["workspaceRoot", "preference"],
+                  properties: {
+                    preference: {
+                      $ref: "#/components/schemas/TypographyPreference",
+                    },
+                  },
+                },
               },
             },
           },

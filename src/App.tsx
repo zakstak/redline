@@ -30,6 +30,14 @@ import {
   type ThemePresetId,
 } from "../shared/theme.js";
 import {
+  CODE_FONT_OPTIONS,
+  DEFAULT_TYPOGRAPHY_PREFERENCE,
+  TYPOGRAPHY_SIZE_CONTRACT,
+  UI_FONT_OPTIONS,
+  typographyCssVariables,
+  type TypographyPreference,
+} from "../shared/typography.js";
+import {
   DiffView,
   type DiffSearchStatus,
   type DiffViewHandle,
@@ -65,6 +73,13 @@ type ThemeSaveOperation = {
   revision: number;
   workspaceRoot: string;
 };
+type TypographySaveState = "saved" | "saving" | "failed" | "rejected";
+type TypographySaveOperation = {
+  preference: TypographyPreference;
+  revision: number;
+  workspaceRoot: string;
+  source: "font" | "size" | "reset";
+};
 
 function applyTheme(preference: ThemePreference) {
   for (const [property, value] of Object.entries(
@@ -74,6 +89,13 @@ function applyTheme(preference: ThemePreference) {
   }
   document.documentElement.style.colorScheme =
     THEME_PRESETS[preference.preset].colorScheme;
+}
+
+function applyTypography(preference: TypographyPreference) {
+  for (const [property, value] of Object.entries(
+    typographyCssVariables(preference),
+  ))
+    document.documentElement.style.setProperty(property, value);
 }
 
 function reviewHintWasDismissed() {
@@ -627,6 +649,162 @@ function ThemeEditor({
   );
 }
 
+function TypographyEditor({
+  onChange,
+  onRetry,
+  preference,
+  saveState,
+  unsaved,
+}: {
+  onChange: (
+    preference: TypographyPreference,
+    source: TypographySaveOperation["source"],
+  ) => void;
+  onRetry: () => void;
+  preference: TypographyPreference;
+  saveState: TypographySaveState;
+  unsaved: boolean;
+}) {
+  const update = (
+    patch: Partial<TypographyPreference>,
+    source: TypographySaveOperation["source"],
+  ) => onChange({ ...preference, ...patch }, source);
+  const sizeControl = (
+    key: "interfaceFontSize" | "codeFontSize",
+    contract: (typeof TYPOGRAPHY_SIZE_CONTRACT)[keyof typeof TYPOGRAPHY_SIZE_CONTRACT],
+  ) => (
+    <div className="typography-size-control">
+      <button
+        aria-label={`Decrease ${contract.label.toLowerCase()} text size`}
+        disabled={preference[key] <= contract.min}
+        onClick={() =>
+          update({ [key]: preference[key] - contract.step }, "size")
+        }
+        type="button"
+      >
+        −
+      </button>
+      <output aria-label={`${contract.label} text size`} aria-live="polite">
+        <strong>{preference[key]} px</strong>
+        <small>
+          {contract.min}–{contract.max} px
+        </small>
+      </output>
+      <button
+        aria-label={`Increase ${contract.label.toLowerCase()} text size`}
+        disabled={preference[key] >= contract.max}
+        onClick={() =>
+          update({ [key]: preference[key] + contract.step }, "size")
+        }
+        type="button"
+      >
+        +
+      </button>
+    </div>
+  );
+
+  return (
+    <section
+      className="settings-section typography-settings"
+      aria-labelledby="typography-heading"
+    >
+      <div className="settings-section-copy">
+        <h2 id="typography-heading">Typography</h2>
+        <p>
+          Choose offline font stacks and size interface and source text
+          independently.
+        </p>
+      </div>
+      <div className="typography-controls">
+        <label>
+          <span>Interface font</span>
+          <small>Navigation, controls, comments, and prose</small>
+          <select
+            onChange={(event) =>
+              update(
+                {
+                  uiFont: event.target.value as TypographyPreference["uiFont"],
+                },
+                "font",
+              )
+            }
+            value={preference.uiFont}
+          >
+            {Object.entries(UI_FONT_OPTIONS).map(([id, option]) => (
+              <option key={id} style={{ fontFamily: option.stack }} value={id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {sizeControl("interfaceFontSize", TYPOGRAPHY_SIZE_CONTRACT.interface)}
+        <label>
+          <span>Code font</span>
+          <small>Diff source, line numbers, and code paths</small>
+          <select
+            onChange={(event) =>
+              update(
+                {
+                  codeFont: event.target
+                    .value as TypographyPreference["codeFont"],
+                },
+                "font",
+              )
+            }
+            value={preference.codeFont}
+          >
+            {Object.entries(CODE_FONT_OPTIONS).map(([id, option]) => (
+              <option key={id} style={{ fontFamily: option.stack }} value={id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {sizeControl("codeFontSize", TYPOGRAPHY_SIZE_CONTRACT.code)}
+        <div className="typography-save-row">
+          <p
+            aria-live="polite"
+            role={
+              saveState === "failed" || saveState === "rejected"
+                ? "alert"
+                : "status"
+            }
+          >
+            {saveState === "saving"
+              ? "Saving typography…"
+              : saveState === "failed"
+                ? unsaved
+                  ? "Typography is unsaved."
+                  : "The font choice could not be saved and was restored."
+                : saveState === "rejected"
+                  ? "Typography was rejected by the server and was restored."
+                  : "Typography saved for this workspace."}
+          </p>
+          {saveState === "failed" && unsaved ? (
+            <button onClick={onRetry} type="button">
+              Retry
+            </button>
+          ) : null}
+          <button
+            disabled={
+              preference.uiFont === DEFAULT_TYPOGRAPHY_PREFERENCE.uiFont &&
+              preference.codeFont === DEFAULT_TYPOGRAPHY_PREFERENCE.codeFont &&
+              preference.interfaceFontSize ===
+                DEFAULT_TYPOGRAPHY_PREFERENCE.interfaceFontSize &&
+              preference.codeFontSize ===
+                DEFAULT_TYPOGRAPHY_PREFERENCE.codeFontSize
+            }
+            onClick={() => onChange(DEFAULT_TYPOGRAPHY_PREFERENCE, "reset")}
+            type="button"
+          >
+            Reset typography
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function SettingsPage({
   themeEditorRevision,
   onBack,
@@ -634,8 +812,12 @@ function SettingsPage({
   onThemeChange,
   onThemeReset,
   onThemeRetry,
+  onTypographyChange,
+  onTypographyRetry,
   settings,
   themeSaveState,
+  typographySaveState,
+  typographyUnsaved,
   workspace,
 }: {
   themeEditorRevision: number;
@@ -644,8 +826,15 @@ function SettingsPage({
   onThemeChange: (preference: ThemePreference) => void;
   onThemeReset: () => void;
   onThemeRetry: () => void;
+  onTypographyChange: (
+    preference: TypographyPreference,
+    source: TypographySaveOperation["source"],
+  ) => void;
+  onTypographyRetry: () => void;
   settings: ReviewSettings;
   themeSaveState: ThemeSaveState;
+  typographySaveState: TypographySaveState;
+  typographyUnsaved: boolean;
   workspace: WorkspaceResponse;
 }) {
   const [draft, setDraft] = useState(String(settings.diffContextLines));
@@ -838,6 +1027,14 @@ function SettingsPage({
           saveState={themeSaveState}
         />
 
+        <TypographyEditor
+          onChange={onTypographyChange}
+          onRetry={onTypographyRetry}
+          preference={settings.typography}
+          saveState={typographySaveState}
+          unsaved={typographyUnsaved}
+        />
+
         <section className="settings-storage" aria-labelledby="storage-heading">
           <DatabaseIcon />
           <div>
@@ -907,11 +1104,15 @@ export default function App() {
     diffContextLines: 3,
     keyboardLayout: "normie",
     theme: DEFAULT_THEME_PREFERENCE,
+    typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [themeSaveState, setThemeSaveState] = useState<ThemeSaveState>("saved");
   const [themeUnsaved, setThemeUnsaved] = useState(false);
   const [themeEditorRevision, setThemeEditorRevision] = useState(0);
+  const [typographySaveState, setTypographySaveState] =
+    useState<TypographySaveState>("saved");
+  const [typographyUnsaved, setTypographyUnsaved] = useState(false);
   const [contextLines, setContextLines] = useState(settings.diffContextLines);
   const [diff, setDiff] = useState<DiffResponse | null>(null);
   const [diffWorkspaceRoot, setDiffWorkspaceRoot] = useState("");
@@ -977,6 +1178,13 @@ export default function App() {
   const persistedThemeRef = useRef<ThemePreference>(DEFAULT_THEME_PREFERENCE);
   const themeDebounceRef = useRef<number | null>(null);
   const flushThemeQueueRef = useRef<() => void>(() => undefined);
+  const typographyQueueRef = useRef<TypographySaveOperation | null>(null);
+  const typographyMutationInFlightRef = useRef(false);
+  const typographyPausedRef = useRef(false);
+  const latestTypographyIntentRef = useRef(0);
+  const confirmedTypographyRef = useRef(DEFAULT_TYPOGRAPHY_PREFERENCE);
+  const desiredTypographyRef = useRef(DEFAULT_TYPOGRAPHY_PREFERENCE);
+  const flushTypographyQueueRef = useRef<() => void>(() => undefined);
   activeWorkspaceRootRef.current = workspace?.root ?? "";
 
   const loadWorkspace = useCallback(
@@ -1054,14 +1262,27 @@ export default function App() {
         setThemeSaveState("saved");
         setThemeUnsaved(false);
       }
+      applyTypography(nextSettings.typography);
+      confirmedTypographyRef.current = nextSettings.typography;
+      desiredTypographyRef.current = nextSettings.typography;
+      typographyQueueRef.current = null;
+      typographyPausedRef.current = false;
+      setTypographySaveState("saved");
+      setTypographyUnsaved(false);
       return nextSettings;
     } catch (error) {
       if (requestId !== settingsRequestRef.current) return null;
       persistedThemeRef.current = DEFAULT_THEME_PREFERENCE;
       applyTheme(DEFAULT_THEME_PREFERENCE);
+      applyTypography(DEFAULT_TYPOGRAPHY_PREFERENCE);
+      confirmedTypographyRef.current = DEFAULT_TYPOGRAPHY_PREFERENCE;
+      desiredTypographyRef.current = DEFAULT_TYPOGRAPHY_PREFERENCE;
+      typographyQueueRef.current = null;
+      typographyPausedRef.current = false;
       setSettings((current) => ({
         ...current,
         theme: DEFAULT_THEME_PREFERENCE,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
       }));
       setSettingsLoaded(true);
       setActionError(
@@ -1194,16 +1415,134 @@ export default function App() {
     flushThemeQueueRef.current();
   }, []);
 
+  const flushTypographyQueue = useCallback(async () => {
+    if (typographyMutationInFlightRef.current || typographyPausedRef.current)
+      return;
+    const operation = typographyQueueRef.current;
+    if (!operation) return;
+    typographyQueueRef.current = null;
+    typographyMutationInFlightRef.current = true;
+    setTypographySaveState("saving");
+    try {
+      const updated = await api<ReviewSettings>("/api/settings/typography", {
+        method: "PUT",
+        body: JSON.stringify({
+          workspaceRoot: operation.workspaceRoot,
+          preference: operation.preference,
+        }),
+      });
+      typographyMutationInFlightRef.current = false;
+      confirmedTypographyRef.current = updated.typography;
+      if (
+        activeWorkspaceRootRef.current === operation.workspaceRoot &&
+        operation.revision === latestTypographyIntentRef.current
+      ) {
+        applyTypography(updated.typography);
+        desiredTypographyRef.current = updated.typography;
+        setSettings((current) => ({
+          ...current,
+          typography: updated.typography,
+        }));
+      }
+      if (typographyQueueRef.current) flushTypographyQueueRef.current();
+      else {
+        setTypographySaveState("saved");
+        setTypographyUnsaved(false);
+      }
+    } catch (error) {
+      typographyMutationInFlightRef.current = false;
+      const rejected = error instanceof ApiError && error.status < 500;
+      if (rejected) {
+        typographyQueueRef.current = null;
+        typographyPausedRef.current = false;
+        desiredTypographyRef.current = confirmedTypographyRef.current;
+        applyTypography(confirmedTypographyRef.current);
+        setSettings((current) => ({
+          ...current,
+          typography: confirmedTypographyRef.current,
+        }));
+        setTypographySaveState("rejected");
+        setTypographyUnsaved(false);
+        return;
+      }
+      if (operation.source === "font") {
+        typographyQueueRef.current = null;
+        typographyPausedRef.current = false;
+        desiredTypographyRef.current = confirmedTypographyRef.current;
+        applyTypography(confirmedTypographyRef.current);
+        setSettings((current) => ({
+          ...current,
+          typography: confirmedTypographyRef.current,
+        }));
+        setTypographySaveState("failed");
+        setTypographyUnsaved(false);
+        return;
+      }
+      typographyPausedRef.current = true;
+      const latest = desiredTypographyRef.current;
+      if (!typographyQueueRef.current)
+        typographyQueueRef.current = {
+          preference: latest,
+          revision: latestTypographyIntentRef.current,
+          workspaceRoot: operation.workspaceRoot,
+          source: operation.source,
+        };
+      setTypographySaveState("failed");
+      setTypographyUnsaved(true);
+    }
+  }, []);
+  flushTypographyQueueRef.current = () => void flushTypographyQueue();
+
+  const queueTypographyPreference = useCallback(
+    (
+      preference: TypographyPreference,
+      source: TypographySaveOperation["source"],
+    ) => {
+      const workspaceRoot = activeWorkspaceRootRef.current;
+      if (!workspaceRoot) return;
+      desiredTypographyRef.current = preference;
+      applyTypography(preference);
+      setSettings((current) => ({ ...current, typography: preference }));
+      const revision = ++latestTypographyIntentRef.current;
+      typographyQueueRef.current = {
+        preference,
+        revision,
+        workspaceRoot,
+        source,
+      };
+      setTypographyUnsaved(true);
+      if (!typographyPausedRef.current) {
+        setTypographySaveState("saving");
+        window.setTimeout(() => flushTypographyQueueRef.current(), 0);
+      } else setTypographySaveState("failed");
+    },
+    [],
+  );
+
+  const retryTypographySave = useCallback(() => {
+    if (!typographyQueueRef.current) {
+      typographyQueueRef.current = {
+        preference: desiredTypographyRef.current,
+        revision: latestTypographyIntentRef.current,
+        workspaceRoot: activeWorkspaceRootRef.current,
+        source: "size",
+      };
+    }
+    typographyPausedRef.current = false;
+    setTypographySaveState("saving");
+    flushTypographyQueueRef.current();
+  }, []);
+
   useEffect(() => {
     const protectUnsavedTheme = (event: BeforeUnloadEvent) => {
-      if (!themeUnsaved) return;
+      if (!themeUnsaved && !typographyUnsaved) return;
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", protectUnsavedTheme);
     return () =>
       window.removeEventListener("beforeunload", protectUnsavedTheme);
-  }, [themeUnsaved]);
+  }, [themeUnsaved, typographyUnsaved]);
 
   useEffect(
     () => () => {
@@ -1764,9 +2103,9 @@ export default function App() {
 
   const openWorkspace = async (event: FormEvent) => {
     event.preventDefault();
-    if (themeUnsaved) {
+    if (themeUnsaved || typographyUnsaved) {
       setWorkspaceError(
-        "Wait for the workspace theme to finish saving, or retry the failed save before switching.",
+        "Wait for workspace appearance settings to finish saving, or retry the failed save before switching.",
       );
       return;
     }
@@ -2175,15 +2514,20 @@ export default function App() {
           setSettings((current) => ({
             ...updated,
             theme: current.theme,
+            typography: current.typography,
           }));
           setContextLines(updated.diffContextLines);
         }}
         onThemeChange={queueThemePreference}
         onThemeReset={resetWorkspaceTheme}
         onThemeRetry={retryThemeSave}
+        onTypographyChange={queueTypographyPreference}
+        onTypographyRetry={retryTypographySave}
         settings={settings}
         themeEditorRevision={themeEditorRevision}
         themeSaveState={themeSaveState}
+        typographySaveState={typographySaveState}
+        typographyUnsaved={typographyUnsaved}
         workspace={workspace}
       />
     );

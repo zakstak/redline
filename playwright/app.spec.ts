@@ -5,6 +5,7 @@ import type {
   WorkspaceResponse,
 } from "../shared/review-contract.js";
 import { DEFAULT_THEME_PREFERENCE } from "../shared/theme.js";
+import { DEFAULT_TYPOGRAPHY_PREFERENCE } from "../shared/typography.js";
 
 const changedWorkspace: WorkspaceResponse = {
   root: "/home/zack/git/redline",
@@ -140,6 +141,7 @@ async function mockReviewApi(
     diffContextLines: 3,
     keyboardLayout: "normie",
     theme: DEFAULT_THEME_PREFERENCE,
+    typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
   };
   await page.route("**/api/workspace?*", (route) =>
     route.fulfill({ json: changedWorkspace }),
@@ -177,6 +179,13 @@ async function mockReviewApi(
           ? DEFAULT_THEME_PREFERENCE
           : (body?.preference ?? settings.theme),
     };
+    return route.fulfill({ json: settings });
+  });
+  await page.route("**/api/settings/typography", async (route) => {
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["typography"];
+    };
+    settings = { ...settings, typography: body.preference };
     return route.fulfill({ json: settings });
   });
   await page.route("**/api/review/snapshot", (route) =>
@@ -977,7 +986,9 @@ test("saves workspace diff context from the Settings page", async ({
     .getByRole("button", { name: "8" })
     .click();
   await page.getByRole("button", { name: "Save settings" }).click();
-  await expect(page.getByText("Saved for this workspace.")).toBeVisible();
+  await expect(
+    page.getByText("Saved for this workspace.", { exact: true }),
+  ).toBeVisible();
   await expect
     .poll(() => diffRequests.some((url) => url.includes("context=8")))
     .toBe(true);
@@ -1105,6 +1116,7 @@ test("preserves an invalid draft when an earlier theme save is acknowledged", as
         diffContextLines: 3,
         keyboardLayout: "normie",
         theme: body.preference,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
       },
     });
   });
@@ -1206,6 +1218,7 @@ test("keeps a failed theme update retryable and never reports false success", as
         diffContextLines: 3,
         keyboardLayout: "normie",
         theme: body.preference,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
       },
     });
   });
@@ -1284,6 +1297,10 @@ test("keeps the default fallback after a new workspace settings load fails", asy
         diffContextLines: 3,
         keyboardLayout: "normie",
         theme: { version: 1, preset: "dusk", overrides: {} },
+        typography: {
+          ...DEFAULT_TYPOGRAPHY_PREFERENCE,
+          uiFont: "serif",
+        },
       },
     });
   });
@@ -1302,6 +1319,12 @@ test("keeps the default fallback after a new workspace settings load fails", asy
       json: { message: "The active workspace changed." },
     }),
   );
+  await page.route("**/api/settings/typography", (route) =>
+    route.fulfill({
+      status: 400,
+      json: { message: "The active workspace changed." },
+    }),
+  );
   await page.goto("/");
   await expect
     .poll(() =>
@@ -1315,11 +1338,14 @@ test("keeps the default fallback after a new workspace settings load fails", asy
 
   await page.getByRole("button", { name: "Change", exact: true }).click();
   await page.getByLabel("Local path").fill("/home/zack/git/another-workspace");
-  await page.getByRole("button", { name: "Open workspace" }).click();
+  await page.getByRole("button", { name: "Open", exact: true }).click();
   await expect(
     page.getByText("another-workspace", { exact: true }),
   ).toBeVisible();
   await page.locator(".settings-nav-button").click();
+  await page.getByLabel("Interface font").selectOption("humanist");
+  await expect(page.getByRole("alert")).toContainText("rejected by the server");
+  await expect(page.getByLabel("Interface font")).toHaveValue("system");
   await page.getByRole("radio", { name: /Paper/ }).click();
   await expect(
     page.getByText("Theme was rejected by the server and was not saved."),
@@ -1335,11 +1361,12 @@ test("keeps the default fallback after a new workspace settings load fails", asy
     .toBe("#191a1f");
 });
 
-test("does not let a stale settings save overwrite a newer theme", async ({
+test("does not let a stale settings save overwrite newer appearance choices", async ({
   page,
 }) => {
   await mockReviewApi(page);
   let releaseSettings: (() => void) | undefined;
+  let releaseTypography: (() => void) | undefined;
   let settingsStarted = false;
   await page.route("**/api/settings", async (route) => {
     if (route.request().method() !== "PUT") return route.fallback();
@@ -1353,6 +1380,24 @@ test("does not let a stale settings save overwrite a newer theme", async ({
         diffContextLines: 8,
         keyboardLayout: "normie",
         theme: DEFAULT_THEME_PREFERENCE,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
+      },
+    });
+  });
+  await page.route("**/api/settings/typography", async (route) => {
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["typography"];
+    };
+    await new Promise<void>((resolve) => {
+      releaseTypography = resolve;
+    });
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 8,
+        keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: body.preference,
       },
     });
   });
@@ -1366,8 +1411,15 @@ test("does not let a stale settings save overwrite a newer theme", async ({
   await expect.poll(() => settingsStarted).toBe(true);
   await page.getByRole("radio", { name: /Paper/ }).click();
   await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  await page.getByLabel("Interface font").selectOption("humanist");
+  await expect.poll(() => releaseTypography !== undefined).toBe(true);
   releaseSettings?.();
   await expect(page.getByText("Saved for this workspace.")).toBeVisible();
+  await expect(page.getByLabel("Interface font")).toHaveValue("humanist");
+  releaseTypography?.();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(() =>
@@ -1426,6 +1478,7 @@ test("does not reapply a delayed theme acknowledgement after reset", async ({
           diffContextLines: 3,
           keyboardLayout: "normie",
           theme: body.preference,
+          typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
         },
       });
     }
@@ -1435,6 +1488,7 @@ test("does not reapply a delayed theme acknowledgement after reset", async ({
         diffContextLines: 3,
         keyboardLayout: "normie",
         theme: DEFAULT_THEME_PREFERENCE,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
       },
     });
   });
@@ -1473,6 +1527,7 @@ test("reveals a saved non-default theme without a default-palette review frame",
         diffContextLines: 3,
         keyboardLayout: "normie",
         theme: { version: 1, preset: "paper", overrides: {} },
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
       },
     }),
   );
@@ -1527,6 +1582,272 @@ test("keeps the approved accessible theme baselines stable", async ({
   });
 });
 
+test("persists independent interface and code fonts and sizes", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  const codeBefore = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--font-code"),
+  );
+  await page.getByLabel("Interface font").selectOption("serif");
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue(
+          "--font-ui",
+        ),
+      ),
+    )
+    .toContain("Charter");
+  expect(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue(
+        "--font-code",
+      ),
+    ),
+  ).toBe(codeBefore);
+  await page.getByLabel("Code font").selectOption("modern");
+  await page
+    .getByRole("button", { name: "Increase interface text size" })
+    .click();
+  await page.getByRole("button", { name: "Increase code text size" }).click();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  await expect(
+    page.locator(".typography-size-control output").first(),
+  ).toContainText("15 px");
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("17 px");
+  await page.reload();
+  await page.locator(".settings-nav-button").click();
+  await expect(page.getByLabel("Interface font")).toHaveValue("serif");
+  await expect(page.getByLabel("Code font")).toHaveValue("modern");
+  await expect(
+    page.locator(".typography-size-control output").first(),
+  ).toContainText("15 px");
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("17 px");
+});
+
+test("keeps failed size changes applied and retries the latest atomic pair", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let attempts = 0;
+  let releaseFailure: (() => void) | undefined;
+  await page.route("**/api/settings/typography", async (route) => {
+    attempts += 1;
+    if (attempts === 1) {
+      await new Promise<void>((resolve) => {
+        releaseFailure = resolve;
+      });
+      return route.fulfill({ status: 500, json: { message: "injected" } });
+    }
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["typography"];
+    };
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: body.preference,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("button", { name: "Increase code text size" }).click();
+  await expect.poll(() => attempts).toBe(1);
+  await page.getByRole("button", { name: "Increase code text size" }).click();
+  releaseFailure?.();
+  await expect(page.getByRole("alert")).toContainText("unsaved");
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("18 px");
+  expect(attempts).toBe(1);
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  expect(attempts).toBe(2);
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("18 px");
+});
+
+test("rolls a rejected typography choice back without offering retry", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let posted: ReviewSettings["typography"] | undefined;
+  await page.route("**/api/settings/typography", (route) => {
+    posted = (
+      route.request().postDataJSON() as {
+        preference: ReviewSettings["typography"];
+      }
+    ).preference;
+    return route.fulfill({ status: 400, json: { message: "invalid" } });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByLabel("Interface font").selectOption("serif");
+  await expect.poll(() => posted?.uiFont).toBe("serif");
+  await expect(page.getByRole("alert")).toContainText("rejected by the server");
+  await expect(page.getByLabel("Interface font")).toHaveValue("system");
+  await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+});
+
+test("restores a failed font save and allows switching workspaces", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let attempts = 0;
+  let releaseFailure: (() => void) | undefined;
+  await page.route("**/api/settings/typography", async (route) => {
+    attempts += 1;
+    await new Promise<void>((resolve) => {
+      releaseFailure = resolve;
+    });
+    return route.fulfill({ status: 500, json: { message: "injected" } });
+  });
+  await page.route("**/api/workspace/open", (route) =>
+    route.fulfill({
+      json: {
+        ...changedWorkspace,
+        root: "/home/zack/git/another-workspace",
+        name: "another-workspace",
+      },
+    }),
+  );
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  await page.getByLabel("Interface font").selectOption("serif");
+  await expect.poll(() => attempts).toBe(1);
+  await expect(page.getByLabel("Interface font")).toHaveValue("serif");
+  await page.getByLabel("Interface font").selectOption("humanist");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue(
+          "--font-ui",
+        ),
+      ),
+    )
+    .toContain("Trebuchet");
+  releaseFailure?.();
+  await expect(page.getByRole("alert")).toContainText("was restored");
+  await expect(page.getByLabel("Interface font")).toHaveValue("system");
+  await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await page.getByRole("button", { name: "Change", exact: true }).click();
+  await page.getByLabel("Local path").fill("/home/zack/git/another-workspace");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(
+    page.getByText("another-workspace", { exact: true }),
+  ).toBeVisible();
+  expect(attempts).toBe(1);
+});
+
+test("autosaves typography normally after settings reload clears a failed font save", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let attempts = 0;
+  await page.route("**/api/settings/typography", async (route) => {
+    attempts += 1;
+    if (attempts === 1)
+      return route.fulfill({ status: 500, json: { message: "injected" } });
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["typography"];
+    };
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: body.preference,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByLabel("Interface font").selectOption("serif");
+  await expect(page.getByRole("alert")).toContainText("was restored");
+  await page.reload();
+  await page.locator(".settings-nav-button").click();
+  await page.getByLabel("Interface font").selectOption("humanist");
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  expect(attempts).toBe(2);
+});
+
+test("keeps maximum typography operable on narrow unified and wide split diffs", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open changed files panel" }).click();
+  await page.locator(".settings-nav-button").click();
+  for (let index = 0; index < 4; index += 1)
+    await page
+      .getByRole("button", { name: "Increase interface text size" })
+      .click();
+  for (let index = 0; index < 4; index += 1)
+    await page.getByRole("button", { name: "Increase code text size" }).click();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.getByRole("button", { name: /Review/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".diff-view")).toHaveAttribute(
+    "data-effective-view",
+    "unified",
+  );
+  const narrowMetrics = await page
+    .locator(".unified-line")
+    .first()
+    .evaluate((row) => ({
+      height: row.getBoundingClientRect().height,
+      scrollWidth: row.parentElement?.scrollWidth ?? 0,
+    }));
+  expect(narrowMetrics.height).toBeGreaterThanOrEqual(32);
+  expect(narrowMetrics.scrollWidth).toBeGreaterThan(0);
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.locator(".diff-view")).toHaveAttribute(
+    "data-effective-view",
+    "split",
+  );
+  const splitHeights = await page
+    .locator(".side-cell")
+    .evaluateAll((cells) =>
+      cells.slice(0, 2).map((cell) => cell.getBoundingClientRect().height),
+    );
+  expect(splitHeights).toHaveLength(2);
+  expect(splitHeights[0]).toBe(splitHeights[1]);
+});
+
 test("keeps Normie as the default and enables modal line selection in Vim layout", async ({
   page,
 }) => {
@@ -1537,7 +1858,9 @@ test("keeps Normie as the default and enables modal line selection in Vim layout
   await page.locator(".settings-nav-button").click();
   await page.getByRole("radio", { name: /Vim/ }).click();
   await page.getByRole("button", { name: "Save settings" }).click();
-  await expect(page.getByText("Saved for this workspace.")).toBeVisible();
+  await expect(
+    page.getByText("Saved for this workspace.", { exact: true }),
+  ).toBeVisible();
   await page.keyboard.press("Escape");
 
   await expect(page.locator(".settings-nav-button")).toContainText("Vim");

@@ -9,6 +9,11 @@ import {
   parseThemePreference,
   type ThemePreference,
 } from "../shared/theme.js";
+import {
+  DEFAULT_TYPOGRAPHY_PREFERENCE,
+  parseTypographyPreference,
+  type TypographyPreference,
+} from "../shared/typography.js";
 
 type StoredComment = Omit<ReviewComment, "outdated">;
 
@@ -157,6 +162,11 @@ export class ReviewDatabase {
         "SELECT value FROM review_settings WHERE key = 'theme_preference'",
       )
       .get() as { value?: string } | undefined;
+    const typographyRow = this.database
+      .prepare(
+        "SELECT value FROM review_settings WHERE key = 'typography_preference'",
+      )
+      .get() as { value?: string } | undefined;
     const parsed = Number(contextRow?.value ?? DEFAULT_CONTEXT_LINES);
     let theme = DEFAULT_THEME_PREFERENCE;
     try {
@@ -165,6 +175,14 @@ export class ReviewDatabase {
         DEFAULT_THEME_PREFERENCE;
     } catch {
       theme = DEFAULT_THEME_PREFERENCE;
+    }
+    let typography = DEFAULT_TYPOGRAPHY_PREFERENCE;
+    try {
+      typography =
+        parseTypographyPreference(JSON.parse(typographyRow?.value ?? "null")) ??
+        DEFAULT_TYPOGRAPHY_PREFERENCE;
+    } catch {
+      typography = DEFAULT_TYPOGRAPHY_PREFERENCE;
     }
     return {
       version: 1,
@@ -175,6 +193,7 @@ export class ReviewDatabase {
       keyboardLayout:
         keyboardRow?.value === "vim" ? "vim" : DEFAULT_KEYBOARD_LAYOUT,
       theme,
+      typography,
     };
   }
 
@@ -216,6 +235,26 @@ export class ReviewDatabase {
     this.database
       .prepare("DELETE FROM review_settings WHERE key = 'theme_preference'")
       .run();
+    return this.getSettings();
+  }
+
+  updateTypographyPreference(typography: TypographyPreference): ReviewSettings {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database
+        .prepare(
+          `
+          INSERT INTO review_settings (key, value)
+          VALUES ('typography_preference', ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        `,
+        )
+        .run(JSON.stringify(typography));
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
     return this.getSettings();
   }
 }
