@@ -1265,6 +1265,76 @@ test("discards a non-retryable rejected theme operation", async ({ page }) => {
   expect(attempts).toBe(1);
 });
 
+test("keeps the default fallback after a new workspace settings load fails", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let settingsLoads = 0;
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    settingsLoads += 1;
+    if (settingsLoads > 1)
+      return route.fulfill({
+        status: 500,
+        json: { message: "Settings are temporarily unavailable." },
+      });
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: { version: 1, preset: "dusk", overrides: {} },
+      },
+    });
+  });
+  await page.route("**/api/workspace/open", (route) =>
+    route.fulfill({
+      json: {
+        ...changedWorkspace,
+        root: "/home/zack/git/another-workspace",
+        name: "another-workspace",
+      },
+    }),
+  );
+  await page.route("**/api/settings/theme", (route) =>
+    route.fulfill({
+      status: 400,
+      json: { message: "The active workspace changed." },
+    }),
+  );
+  await page.goto("/");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--canvas")
+          .trim(),
+      ),
+    )
+    .toBe("#1d1917");
+
+  await page.getByRole("button", { name: "Change", exact: true }).click();
+  await page.getByLabel("Local path").fill("/home/zack/git/another-workspace");
+  await page.getByRole("button", { name: "Open workspace" }).click();
+  await expect(
+    page.getByText("another-workspace", { exact: true }),
+  ).toBeVisible();
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("radio", { name: /Paper/ }).click();
+  await expect(
+    page.getByText("Theme was rejected by the server and was not saved."),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--canvas")
+          .trim(),
+      ),
+    )
+    .toBe("#191a1f");
+});
+
 test("does not let a stale settings save overwrite a newer theme", async ({
   page,
 }) => {

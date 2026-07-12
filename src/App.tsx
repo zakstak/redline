@@ -1057,6 +1057,7 @@ export default function App() {
       return nextSettings;
     } catch (error) {
       if (requestId !== settingsRequestRef.current) return null;
+      persistedThemeRef.current = DEFAULT_THEME_PREFERENCE;
       applyTheme(DEFAULT_THEME_PREFERENCE);
       setSettings((current) => ({
         ...current,
