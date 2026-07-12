@@ -1089,6 +1089,43 @@ test("keeps an invalid multi-color draft protected until the complete target is 
   expect(themeUpdates).toBe(1);
 });
 
+test("preserves an invalid draft when an earlier theme save is acknowledged", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let releaseUpdate: (() => void) | undefined;
+  let updateStarted = false;
+  await page.route("**/api/settings/theme", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    updateStarted = true;
+    await new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["theme"];
+    };
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: body.preference,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("radio", { name: /Dusk/ }).click();
+  await expect.poll(() => updateStarted).toBe(true);
+  await page.getByText("Customize semantic colors").click();
+  const input = page.getByLabel("on accent");
+  await input.fill("not-a-color");
+  await expect(page.getByRole("alert")).toContainText("Draft not applied");
+  releaseUpdate?.();
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  await expect(input).toHaveValue("not-a-color");
+});
+
 test("resets the acknowledged workspace theme and keeps recovery controls protected on a phone", async ({
   page,
 }) => {
@@ -1153,6 +1190,28 @@ test("keeps a failed theme update retryable and never reports false success", as
   await page.getByRole("button", { name: "Retry save" }).click();
   await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
   expect(attempts).toBe(2);
+});
+
+test("discards a non-retryable rejected theme operation", async ({ page }) => {
+  await mockReviewApi(page);
+  let attempts = 0;
+  await page.route("**/api/settings/theme", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    attempts += 1;
+    return route.fulfill({
+      status: 400,
+      json: { message: "The active workspace changed." },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("radio", { name: /Dusk/ }).click();
+
+  await expect(
+    page.getByText("Theme was rejected by the server and was not saved."),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry save" })).toHaveCount(0);
+  expect(attempts).toBe(1);
 });
 
 test("lets workspace reset supersede a debounced theme update", async ({

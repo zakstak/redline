@@ -258,6 +258,7 @@ const warning = (
 
 export const THEME_VALIDATION_MATRIX: readonly ThemeMatrixEntry[] = [
   normalText("ink", "canvas"),
+  normalText("ink", "paper"),
   normalText("inkSoft", "paper"),
   normalText("inkMuted", "paper"),
   normalText("onAccent", "accent"),
@@ -328,7 +329,11 @@ export const THEME_VALIDATION_MATRIX: readonly ThemeMatrixEntry[] = [
       "syntaxOperator",
       "syntaxInvalid",
     ] as const
-  ).map((role) => normalText(role, "canvas")),
+  ).flatMap((role) => [
+    normalText(role, "canvas"),
+    normalText(role, "added"),
+    normalText(role, "removed"),
+  ]),
 ];
 
 interface Rgba {
@@ -389,6 +394,7 @@ export function contrastRatio(
   foregroundValue: string,
   backgroundValue: string,
   canvasValue = "#ffffff",
+  backgroundIsCanvas = false,
 ) {
   const foreground = parseHexColor(foregroundValue);
   const background = parseHexColor(backgroundValue);
@@ -400,7 +406,9 @@ export function contrastRatio(
     blue: 1,
     alpha: 1,
   });
-  const renderedBackground = composite(background, opaqueCanvas);
+  const renderedBackground = backgroundIsCanvas
+    ? opaqueCanvas
+    : composite(background, opaqueCanvas);
   const renderedForeground = composite(foreground, renderedBackground);
   const first = luminance(renderedForeground);
   const second = luminance(renderedBackground);
@@ -424,6 +432,7 @@ export function evaluateTheme(colors: ThemeColors): ThemeEvaluation {
       colors[entry.foreground],
       colors[entry.background],
       colors.canvas,
+      entry.background === "canvas",
     );
     return ratio === null || ratio + Number.EPSILON < entry.threshold
       ? [{ ...entry, ratio: ratio ?? 0 }]

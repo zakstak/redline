@@ -717,20 +717,14 @@ kbd {
   cursor: pointer;
 }
 
-.settings-nav-button {
-  border-color: #6a6d79;
-  background: #202126;
-  color: #e5e5e9;
-}
-
 .settings-nav-button:focus-visible {
-  outline-color: #ff7b87;
+  outline-color: var(--focus);
 }
 
 .settings-nav-button:hover {
-  border-color: #ff7b87;
-  background: #2b2c33;
-  color: #e5e5e9;
+  border-color: var(--accent-strong);
+  background: var(--paper-hover);
+  color: var(--ink);
 }
 
 .settings-nav-button small {

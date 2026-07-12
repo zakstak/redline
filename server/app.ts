@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
+import { THEME_COLOR_ROLES } from "../shared/theme.js";
 import { ReviewWorkspace } from "./review-workspace.js";
 
 const reviewAnchorSchema = {
@@ -617,6 +618,7 @@ const openApiDocument = {
           preset: { type: "string", enum: ["redline", "dusk", "paper"] },
           overrides: {
             type: "object",
+            propertyNames: { enum: THEME_COLOR_ROLES },
             additionalProperties: {
               type: "string",
               pattern: "^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",

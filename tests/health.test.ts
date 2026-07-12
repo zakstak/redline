@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
 import { buildServer } from "../server/app.js";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
+import { THEME_COLOR_ROLES } from "../shared/theme.js";
 
 const workspaceDir = process.cwd();
 let app = buildServer({ workspaceDir });
@@ -103,6 +104,11 @@ describe("static bootstrap serving", () => {
         schemas: {
           Comment: { properties: Record<string, unknown> };
           CreateComment: { properties: Record<string, unknown> };
+          ThemePreference: {
+            properties: {
+              overrides: { propertyNames: { enum: string[] } };
+            };
+          };
         };
       };
     }>();
@@ -139,6 +145,10 @@ describe("static bootstrap serving", () => {
     expect(document.components.schemas.Comment.properties).not.toHaveProperty(
       "lineNumber",
     );
+    expect(
+      document.components.schemas.ThemePreference.properties.overrides
+        .propertyNames.enum,
+    ).toEqual(THEME_COLOR_ROLES);
     expect(document.paths).toMatchObject({
       "/api/settings/theme": {
         put: {

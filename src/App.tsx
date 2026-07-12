@@ -44,12 +44,21 @@ interface ApiErrorPayload {
   message?: string;
 }
 
+class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 interface PendingCommentDeletion {
   comment: ReviewComment;
   workspaceRoot: string;
 }
 
-type ThemeSaveState = "saved" | "saving" | "failed";
+type ThemeSaveState = "saved" | "saving" | "failed" | "rejected";
 type ThemeSaveOperation = {
   kind: "update" | "reset";
   preference?: ThemePreference;
@@ -88,8 +97,9 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
     const payload = (await response
       .json()
       .catch(() => ({}))) as ApiErrorPayload;
-    throw new Error(
+    throw new ApiError(
       payload.message || `Local request failed with status ${response.status}.`,
+      response.status,
     );
   }
 
@@ -382,8 +392,10 @@ function ThemeEditor({
         `${finding.foreground} on ${finding.background}: ${finding.nonColorCue}`,
     ),
   );
+  const invalidDraftRef = useRef(false);
 
   useEffect(() => {
+    if (invalidDraftRef.current) return;
     setPreset(preference.preset);
     setDraft(resolveTheme(preference));
     setDraftErrors([]);
@@ -407,12 +419,14 @@ function ThemeEditor({
       else malformed.push(`${role}: use a 3, 4, 6, or 8 digit hex color.`);
     }
     if (malformed.length > 0) {
+      invalidDraftRef.current = true;
       setDraftErrors(malformed);
       setDraftWarnings([]);
       return;
     }
     const evaluation = evaluateTheme(normalized);
     if (!evaluation.valid) {
+      invalidDraftRef.current = true;
       setDraftErrors(
         evaluation.errors.map(
           (finding) =>
@@ -423,6 +437,7 @@ function ThemeEditor({
       setDraftWarnings([]);
       return;
     }
+    invalidDraftRef.current = false;
     const base = THEME_PRESETS[nextPreset].colors;
     const overrides = Object.fromEntries(
       THEME_COLOR_ROLES.flatMap((role) =>
@@ -440,6 +455,7 @@ function ThemeEditor({
   };
 
   const choosePreset = (nextPreset: ThemePresetId) => {
+    invalidDraftRef.current = false;
     const colors = { ...THEME_PRESETS[nextPreset].colors };
     setPreset(nextPreset);
     setDraft(colors);
@@ -589,7 +605,9 @@ function ThemeEditor({
               ? "Saving theme for this workspace."
               : saveState === "failed"
                 ? "Theme is applied locally but not saved."
-                : "Theme saved for this workspace."}
+                : saveState === "rejected"
+                  ? "Theme was rejected by the server and was not saved."
+                  : "Theme saved for this workspace."}
           </p>
           {saveState === "failed" ? (
             <button onClick={onRetry} type="button">
@@ -1090,12 +1108,18 @@ export default function App() {
         setThemeSaveState("saving");
         setThemeUnsaved(true);
       }
-    } catch {
+    } catch (error) {
       themeMutationInFlightRef.current = false;
+      const retryable = !(error instanceof ApiError) || error.status >= 500;
       if (operation.revision === latestThemeIntentRef.current) {
-        themeQueueRef.current.unshift(operation);
-        setThemeSaveState("failed");
-        setThemeUnsaved(true);
+        if (retryable) {
+          themeQueueRef.current.unshift(operation);
+          setThemeSaveState("failed");
+          setThemeUnsaved(true);
+        } else {
+          setThemeSaveState("rejected");
+          setThemeUnsaved(false);
+        }
       } else {
         setThemeSaveState("saving");
         setThemeUnsaved(true);

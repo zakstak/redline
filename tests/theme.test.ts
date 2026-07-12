@@ -31,6 +31,20 @@ describe("theme contract", () => {
   it("calculates opaque and translucent contrast", () => {
     expect(contrastRatio("#000000", "#ffffff")).toBeCloseTo(21, 5);
     expect(contrastRatio("#00000080", "#ffffff")).toBeCloseTo(4, 2);
+    expect(
+      contrastRatio("#ffffff", "#00000080", "#00000080", true),
+    ).toBeCloseTo(4.0041, 3);
+  });
+
+  it("requires primary and syntax text to remain readable on rendered surfaces", () => {
+    const checks = new Set(
+      THEME_VALIDATION_MATRIX.map(
+        ({ foreground, background }) => `${foreground}:${background}`,
+      ),
+    );
+    expect(checks).toContain("ink:paper");
+    expect(checks).toContain("syntaxText:added");
+    expect(checks).toContain("syntaxKeyword:removed");
   });
 
   it("evaluates values immediately below, at, and above text and UI thresholds", () => {
