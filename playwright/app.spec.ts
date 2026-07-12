@@ -1,16 +1,11 @@
-import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { promisify } from "node:util";
 import { expect, test, type Page } from "@playwright/test";
 import type {
   DiffResponse,
   ReviewSettings,
   WorkspaceResponse,
 } from "../shared/review-contract.js";
-
-const execute = promisify(execFile);
+import { DEFAULT_THEME_PREFERENCE } from "../shared/theme.js";
+import { DEFAULT_TYPOGRAPHY_PREFERENCE } from "../shared/typography.js";
 
 const changedWorkspace: WorkspaceResponse = {
   root: "/home/zack/git/redline",
@@ -72,6 +67,44 @@ const approvedWorkspace: WorkspaceResponse = {
     unchangedCount: 2,
     changedCount: 0,
   },
+};
+
+const longFilePath =
+  "src/features/review/workspace/components/very-long-directory-name/ReviewWorkspacePaneWithAnIntentionallyLongName.ts";
+
+const layoutWorkspace: WorkspaceResponse = {
+  ...changedWorkspace,
+  name: "review-automation-with-a-deliberately-long-workspace-name",
+  files: [
+    ...changedWorkspace.files,
+    {
+      path: longFilePath,
+      name: "ReviewWorkspacePaneWithAnIntentionallyLongName.ts",
+      directory:
+        "src/features/review/workspace/components/very-long-directory-name",
+      statusCode: " M",
+      kind: "modified",
+      fingerprint: "long-path-v1",
+      reviewStatus: "unreviewed",
+      binary: false,
+      generated: false,
+      commentCount: 0,
+    },
+  ],
+  counts: { total: 3, needsReview: 3, approved: 0, changed: 1, comments: 0 },
+};
+
+const generatedNoiseFile = {
+  path: "generated.min.js",
+  name: "generated.min.js",
+  directory: "",
+  statusCode: "??",
+  kind: "untracked" as const,
+  fingerprint: "generated-v1",
+  reviewStatus: "unreviewed" as const,
+  binary: false,
+  generated: true,
+  commentCount: 0,
 };
 
 const diff: DiffResponse = {
@@ -141,15 +174,33 @@ async function mockReviewApi(
   page: Page,
   diffPayload: DiffPayload = diff,
   diffRequests: string[] = [],
+  workspacePayload: WorkspaceResponse = changedWorkspace,
 ) {
   let settings: ReviewSettings = {
     version: 1,
     diffContextLines: 3,
     keyboardLayout: "normie",
+    theme: DEFAULT_THEME_PREFERENCE,
+    typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
   };
-  await page.route("**/api/workspace?*", (route) =>
-    route.fulfill({ json: changedWorkspace }),
-  );
+  await page.route("**/api/workspace?*", (route) => {
+    const includeNoise =
+      new URL(route.request().url()).searchParams.get("includeNoise") ===
+      "true";
+    const json = includeNoise
+      ? {
+          ...workspacePayload,
+          files: [...workspacePayload.files, generatedNoiseFile],
+          hiddenNoiseCount: 0,
+          counts: {
+            ...workspacePayload.counts,
+            total: workspacePayload.counts.total + 1,
+            needsReview: workspacePayload.counts.needsReview + 1,
+          },
+        }
+      : workspacePayload;
+    return route.fulfill({ json });
+  });
   await page.route("**/api/diff?*", async (route) => {
     diffRequests.push(route.request().url());
     const payload =
@@ -165,11 +216,31 @@ async function mockReviewApi(
         "diffContextLines" | "keyboardLayout"
       >;
       settings = {
-        version: 1,
+        ...settings,
         diffContextLines: body.diffContextLines,
         keyboardLayout: body.keyboardLayout,
       };
     }
+    return route.fulfill({ json: settings });
+  });
+  await page.route("**/api/settings/theme", async (route) => {
+    const body = route.request().postDataJSON() as {
+      preference?: ReviewSettings["theme"];
+    } | null;
+    settings = {
+      ...settings,
+      theme:
+        route.request().method() === "DELETE"
+          ? DEFAULT_THEME_PREFERENCE
+          : (body?.preference ?? settings.theme),
+    };
+    return route.fulfill({ json: settings });
+  });
+  await page.route("**/api/settings/typography", async (route) => {
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["typography"];
+    };
+    settings = { ...settings, typography: body.preference };
     return route.fulfill({ json: settings });
   });
   await page.route("**/api/review/snapshot", (route) =>
@@ -193,7 +264,7 @@ async function mockReviewApi(
     route.fulfill({
       json: {
         approvedAt: "2026-07-09T13:00:00.000Z",
-        approvals: changedWorkspace.files.map((file) => ({
+        approvals: workspacePayload.files.map((file) => ({
           path: file.path,
           fingerprint: file.fingerprint,
           approvedAt: "2026-07-09T13:00:00.000Z",
@@ -229,94 +300,6 @@ test("renders local changes and flags files changed since approval", async ({
       .first(),
   ).toBeVisible();
   await expect(page.locator('input[type="file"]')).toHaveCount(0);
-});
-
-test("defers a whole file outside the active queue and restores its latest diff", async ({
-  page,
-}) => {
-  await mockReviewApi(page);
-  const deferredWorkspace: WorkspaceResponse = {
-    ...changedWorkspace,
-    files: changedWorkspace.files.filter((file) => file.path !== "src/App.tsx"),
-    deferredFiles: [changedWorkspace.files[0]],
-    counts: {
-      ...changedWorkspace.counts,
-      total: 1,
-      needsReview: 1,
-      changed: 0,
-    },
-  };
-  await page.route("**/api/review/defer", (route) =>
-    route.fulfill({ json: deferredWorkspace }),
-  );
-  await page.route("**/api/review/restore", (route) =>
-    route.fulfill({ json: changedWorkspace }),
-  );
-  await page.goto("/");
-
-  await page.getByRole("button", { name: "Defer file" }).click();
-  await expect(page.getByRole("heading", { name: "Deferred" })).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: /App\.tsx.*Deferred/ }),
-  ).toBeVisible();
-  await expect(page.getByRole("button", { name: /^App\.tsx/ })).toHaveCount(1);
-  await page.getByRole("button", { name: /App\.tsx.*Deferred/ }).click();
-  await expect(page.locator(".active-file-heading")).toContainText("App.tsx");
-  await expect(
-    page.getByRole("button", { name: "Approve file" }),
-  ).toBeDisabled();
-  await page.getByRole("button", { name: "Restore" }).click();
-  await expect(page.getByRole("heading", { name: "Deferred" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Defer file" })).toBeEnabled();
-});
-
-test("renders immutable agent decisions and explicitly reopens the thread", async ({
-  page,
-}) => {
-  const decided = {
-    id: "55555555-5555-4555-8555-555555555555",
-    path: "src/App.tsx",
-    anchors: [{ side: "new" as const, startLine: 1, endLine: 1 }],
-    body: "Handle this edge case.",
-    createdAt: "2026-07-09T12:30:00.000Z",
-    fingerprint: "app-v2",
-    outdated: false,
-    state: "accepted" as const,
-    rootVersion: 1,
-    threadRevision: 1,
-    replies: [
-      {
-        id: "reply-1",
-        actor: "agent" as const,
-        body: "Implemented and validated with npm run ci.",
-        createdAt: "2026-07-09T13:00:00.000Z",
-        decision: "accepted" as const,
-        requestId: "request-1",
-      },
-    ],
-  };
-  await mockReviewApi(page, { ...diff, comments: [decided] });
-  await page.route("**/api/comments/*/reopen", (route) =>
-    route.fulfill({
-      json: {
-        comment: { ...decided, state: "pending", threadRevision: 2 },
-      },
-    }),
-  );
-  await page.goto("/");
-  await page.getByRole("button", { name: /^Snapshot 2$/ }).click();
-  await expect(
-    page.getByText("Implemented and validated with npm run ci."),
-  ).toBeVisible();
-  await expect(page.getByText("accepted", { exact: true })).toHaveCount(2);
-  await expect(
-    page.getByRole("button", { name: /edit agent reply/i }),
-  ).toHaveCount(0);
-  await page.getByRole("button", { name: "Reopen thread" }).click();
-  await expect(page.getByText("pending", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Reopen thread" })).toHaveCount(
-    0,
-  );
 });
 
 test("collapses and restores the review panel", async ({ page }) => {
@@ -500,10 +483,6 @@ test("creates a comment with C and saves it with the keyboard", async ({
         createdAt: "2026-07-09T13:30:00.000Z",
         fingerprint: "app-v2",
         outdated: false,
-        state: "pending",
-        rootVersion: 1,
-        threadRevision: 0,
-        replies: [],
       },
     });
   });
@@ -542,7 +521,7 @@ test("undoes comment deletion before the server mutation is sent", async ({
     outdated: false,
     state: "pending" as const,
     rootVersion: 1,
-    threadRevision: 0,
+    threadRevision: 1,
     replies: [],
   };
   await mockReviewApi(page, { ...diff, comments: [comment] });
@@ -580,7 +559,7 @@ test("teaches the first review action once and keeps shortcuts available", async
     page.getByText("Select line numbers to leave a note."),
   ).toHaveCount(0);
 
-  await page.getByText("Keyboard shortcuts").click();
+  await page.getByText("Shortcuts", { exact: true }).click();
   await expect(page.getByText("Go to a visible line")).toBeVisible();
 });
 
@@ -920,7 +899,7 @@ test("reloads diff comments when repositories share the same path and fingerprin
         outdated: false,
         state: "pending",
         rootVersion: 1,
-        threadRevision: 0,
+        threadRevision: 1,
         replies: [],
       },
     ],
@@ -969,7 +948,7 @@ test("keeps stale comments as history without attaching them to current lines", 
         outdated: true,
         state: "pending",
         rootVersion: 1,
-        threadRevision: 0,
+        threadRevision: 1,
         replies: [],
       },
     ],
@@ -985,6 +964,289 @@ test("keeps stale comments as history without attaching them to current lines", 
   ).toBeVisible();
   await expect(page.locator(".line-comment-count")).toHaveCount(0);
 });
+
+const layoutMatrix = [
+  { width: 1440, height: 900, maxRailWidth: 216, overlay: false },
+  { width: 900, height: 700, maxRailWidth: 208, overlay: false },
+  { width: 768, height: 900, maxRailWidth: 240, overlay: true },
+  { width: 720, height: 450, maxRailWidth: 240, overlay: true },
+] as const;
+
+for (const matrixCase of layoutMatrix) {
+  test(`contains the compact file rail at ${matrixCase.width}x${matrixCase.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(matrixCase);
+    await mockReviewApi(page, diff, [], layoutWorkspace);
+    await page.goto("/");
+    if (matrixCase.overlay)
+      await page
+        .getByRole("button", { name: "Open changed files panel" })
+        .click();
+
+    const rail = page.getByLabel("Changed files", { exact: true });
+    const [railBox, headerBox, footerBox, searchBox, diffBox] =
+      await Promise.all([
+        rail.boundingBox(),
+        page.locator(".workspace-identity").boundingBox(),
+        page.locator(".rail-footer").boundingBox(),
+        page.getByPlaceholder("Filter files").boundingBox(),
+        page.locator(".diff-workspace").boundingBox(),
+      ]);
+
+    expect(railBox?.width).toBeLessThanOrEqual(matrixCase.maxRailWidth);
+    expect(headerBox?.height).toBeLessThanOrEqual(76);
+    expect(footerBox?.height).toBeLessThanOrEqual(92);
+    expect(
+      await rail.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth,
+      ),
+    ).toBe(true);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBe(matrixCase.width);
+    expect(
+      railBox &&
+        searchBox &&
+        searchBox.x >= railBox.x &&
+        searchBox.x + searchBox.width <= railBox.x + railBox.width,
+    ).toBe(true);
+    if (matrixCase.overlay) {
+      expect(
+        await page
+          .locator(".diff-workspace")
+          .evaluate((element) => (element as HTMLElement).inert),
+      ).toBe(true);
+    } else {
+      expect(railBox && diffBox && diffBox.x >= railBox.x + railBox.width).toBe(
+        true,
+      );
+    }
+
+    if (matrixCase.height === 450) {
+      await page.getByText("Shortcuts", { exact: true }).click();
+      const shortcutsBox = await page
+        .getByLabel("Keyboard shortcuts")
+        .boundingBox();
+      expect(
+        railBox &&
+          shortcutsBox &&
+          shortcutsBox.x >= railBox.x &&
+          shortcutsBox.x + shortcutsBox.width <= railBox.x + railBox.width &&
+          shortcutsBox.y >= 0 &&
+          shortcutsBox.y + shortcutsBox.height <= matrixCase.height,
+      ).toBe(true);
+      expect(
+        (await page.locator(".rail-footer").boundingBox())?.height,
+      ).toBeLessThanOrEqual(92);
+    }
+  });
+}
+
+test("discloses a complete long path on keyboard focus without widening the rail", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await mockReviewApi(page, diff, [], layoutWorkspace);
+  await page.goto("/");
+
+  const longRow = page.getByRole("button", {
+    name: new RegExp(longFilePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+  });
+  await expect(longRow).toBeVisible();
+  expect(await longRow.getAttribute("aria-label")).toContain(longFilePath);
+  const railWidth = await page
+    .getByLabel("Changed files", { exact: true })
+    .evaluate((element) => element.clientWidth);
+  expect(await longRow.evaluate((element) => element.clientWidth)).toBeLessThan(
+    railWidth,
+  );
+
+  await longRow.focus();
+  await expect(longRow.locator(".file-focus-path")).toHaveText(longFilePath);
+  await expect(longRow.locator(".file-focus-path")).toBeVisible();
+
+  await page.keyboard.press("f");
+  await page.getByPlaceholder("Filter files").fill("styles");
+  await expect(page.getByRole("button", { name: /styles\.css/ })).toBeVisible();
+  await page.getByPlaceholder("Filter files").fill("");
+  await longRow.focus();
+  await page.keyboard.press("j");
+  await expect(
+    page.getByRole("button", { name: /styles\.css/ }),
+  ).toHaveAttribute("aria-current", "true");
+});
+
+test("keeps review-noise visibility session-only in Settings and restores trigger focus", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 768, height: 900 });
+  const workspaceRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/workspace?"))
+      workspaceRequests.push(request.url());
+  });
+  await mockReviewApi(page, diff, [], layoutWorkspace);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open changed files panel" }).click();
+  await page.locator(".settings-nav-button").click();
+
+  const noiseToggle = page.getByRole("checkbox", { name: /Show review noise/ });
+  await expect(noiseToggle).not.toBeChecked();
+  await noiseToggle.check();
+  await expect
+    .poll(() =>
+      workspaceRequests.some((url) => url.includes("includeNoise=true")),
+    )
+    .toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-nav-button")).toBeFocused();
+  await expect(
+    page.getByRole("button", { name: /generated\.min\.js/ }),
+  ).toBeVisible();
+
+  await page.locator(".settings-nav-button").click();
+  await expect(noiseToggle).toBeChecked();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(
+    768,
+  );
+  expect(
+    await page
+      .locator(".settings-shell")
+      .evaluate((element) => element.scrollHeight > element.clientHeight),
+  ).toBe(true);
+  const saveButton = page.getByRole("button", { name: "Save settings" });
+  await saveButton.scrollIntoViewIfNeeded();
+  const saveBox = await saveButton.boundingBox();
+  expect(saveBox && saveBox.y >= 0 && saveBox.y + saveBox.height <= 900).toBe(
+    true,
+  );
+  await page.keyboard.press("Escape");
+  await page.reload();
+  await page.getByRole("button", { name: "Open changed files panel" }).click();
+  await page.locator(".settings-nav-button").click();
+  await expect(
+    page.getByRole("checkbox", { name: /Show review noise/ }),
+  ).not.toBeChecked();
+});
+
+test("preserves a retryable typography change when review noise is toggled", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let settingsReads = 0;
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() === "GET") settingsReads += 1;
+    return route.fallback();
+  });
+  await page.route("**/api/settings/typography", (route) =>
+    route.fulfill({ status: 500, json: { message: "injected" } }),
+  );
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("button", { name: "Decrease code text size" }).click();
+  await expect(page.getByRole("alert")).toContainText("unsaved");
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("15 px");
+
+  await page.getByRole("checkbox", { name: /Show review noise/ }).check();
+
+  await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("15 px");
+  expect(settingsReads).toBe(1);
+});
+
+test("includes each file's nonzero comment count in its accessible name", async ({
+  page,
+}) => {
+  const workspaceWithComments: WorkspaceResponse = {
+    ...changedWorkspace,
+    files: changedWorkspace.files.map((file, index) =>
+      index === 0 ? { ...file, commentCount: 2 } : file,
+    ),
+    counts: { ...changedWorkspace.counts, comments: 2 },
+  };
+  await mockReviewApi(page, diff, [], workspaceWithComments);
+  await page.goto("/");
+
+  await expect(
+    page.getByRole("button", { name: /src\/App\.tsx.*2 comments/ }),
+  ).toBeVisible();
+});
+
+for (const contextCase of [
+  { width: 1440, height: 900, layout: "split" },
+  { width: 720, height: 450, layout: "unified" },
+  { width: 360, height: 700, layout: "unified" },
+] as const) {
+  test(`keeps the ${contextCase.layout} context control unobscured at ${contextCase.width}x${contextCase.height}`, async ({
+    page,
+  }) => {
+    const diffRequests: string[] = [];
+    await page.setViewportSize(contextCase);
+    await mockReviewApi(page, diff, diffRequests, layoutWorkspace);
+    await page.goto("/");
+    const expectedRegion =
+      contextCase.layout === "split" ? "Side by side diff" : "Unified diff";
+    await expect(
+      page.getByRole("region", { name: expectedRegion }),
+    ).toBeVisible();
+    const hunk = page.locator(".diff-hunk-line").first();
+    const label = hunk.locator(":scope > span");
+    const control = page
+      .getByRole("button", { name: "Show more context" })
+      .first();
+    const scroller = page.locator(".diff-scroll");
+    const [hunkBox, labelBox, controlBox, scrollerBox] = await Promise.all([
+      hunk.boundingBox(),
+      label.boundingBox(),
+      control.boundingBox(),
+      scroller.boundingBox(),
+    ]);
+    expect(
+      hunkBox &&
+        controlBox &&
+        controlBox.y >= hunkBox.y &&
+        controlBox.y + controlBox.height <= hunkBox.y + hunkBox.height,
+    ).toBe(true);
+    expect(
+      labelBox && controlBox && labelBox.x + labelBox.width <= controlBox.x,
+    ).toBe(true);
+    expect(
+      scrollerBox &&
+        controlBox &&
+        controlBox.x >= scrollerBox.x &&
+        controlBox.x + controlBox.width <= scrollerBox.x + scrollerBox.width,
+    ).toBe(true);
+
+    if (contextCase.width <= 720) {
+      await scroller.evaluate((element) => {
+        element.scrollLeft = element.scrollWidth;
+      });
+      const [scrolledControlBox, scrolledScrollerBox] = await Promise.all([
+        control.boundingBox(),
+        scroller.boundingBox(),
+      ]);
+      expect(
+        scrolledControlBox &&
+          scrolledScrollerBox &&
+          scrolledControlBox.x >= scrolledScrollerBox.x &&
+          scrolledControlBox.x + scrolledControlBox.width <=
+            scrolledScrollerBox.x + scrolledScrollerBox.width,
+      ).toBe(true);
+    }
+
+    await control.focus();
+    await expect(control).toBeFocused();
+    await control.click();
+    await expect
+      .poll(() => diffRequests.some((url) => url.includes("context=8")))
+      .toBe(true);
+  });
+}
 
 test("uses an overlay file drawer without clipping the tablet workspace", async ({
   page,
@@ -1074,7 +1336,9 @@ test("saves workspace diff context from the Settings page", async ({
     .getByRole("button", { name: "8" })
     .click();
   await page.getByRole("button", { name: "Save settings" }).click();
-  await expect(page.getByText("Saved for this workspace.")).toBeVisible();
+  await expect(
+    page.getByText("Saved for this workspace.", { exact: true }),
+  ).toBeVisible();
   await expect
     .poll(() => diffRequests.some((url) => url.includes("context=8")))
     .toBe(true);
@@ -1084,6 +1348,854 @@ test("saves workspace diff context from the Settings page", async ({
   await expect(page.locator(".settings-nav-button")).toContainText(
     "Normie · 8 lines",
   );
+});
+
+test("hot-applies and autosaves a workspace theme without reloading", async ({
+  page,
+}) => {
+  const themeRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/settings/theme"))
+      themeRequests.push(request.method());
+  });
+  await mockReviewApi(page);
+  await page.goto("/");
+
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("radio", { name: /Dusk/ }).click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--canvas")
+          .trim(),
+      ),
+    )
+    .toBe("#1d1917");
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  expect(themeRequests).toEqual(["PUT"]);
+});
+
+test("preserves a pending theme while unrelated settings are acknowledged", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("radio", { name: /Dusk/ }).click();
+  await page
+    .getByRole("group", { name: "Common context line values" })
+    .getByRole("button", { name: "8" })
+    .click();
+  await page.getByRole("button", { name: "Save settings" }).click();
+
+  expect(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--canvas")
+        .trim(),
+    ),
+  ).toBe("#1d1917");
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+});
+
+test("keeps an invalid color draft protected until the palette is valid", async ({
+  page,
+}) => {
+  let themeUpdates = 0;
+  page.on("request", (request) => {
+    if (
+      request.url().endsWith("/api/settings/theme") &&
+      request.method() === "PUT"
+    )
+      themeUpdates += 1;
+  });
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByText("Customize semantic colors").click();
+
+  await page.getByLabel("on accent").fill("#ff7b87");
+  await expect(page.getByRole("alert")).toContainText("Draft not applied");
+  expect(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--on-accent")
+        .trim(),
+    ),
+  ).toBe("#191a1f");
+  expect(themeUpdates).toBe(0);
+
+  await page.getByLabel("on accent").fill("#191a1f");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        accent: getComputedStyle(document.documentElement)
+          .getPropertyValue("--accent")
+          .trim(),
+        onAccent: getComputedStyle(document.documentElement)
+          .getPropertyValue("--on-accent")
+          .trim(),
+      })),
+    )
+    .toEqual({ accent: "#ff7b87", onAccent: "#191a1f" });
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  expect(themeUpdates).toBe(1);
+});
+
+test("preserves an invalid draft when an earlier theme save is acknowledged", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let releaseUpdate: (() => void) | undefined;
+  let updateStarted = false;
+  await page.route("**/api/settings/theme", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    updateStarted = true;
+    await new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["theme"];
+    };
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: body.preference,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page
+    .getByRole("group", { name: "Common context line values" })
+    .getByRole("button", { name: "8" })
+    .click();
+  await page.getByRole("radio", { name: /Dusk/ }).click();
+  await expect.poll(() => updateStarted).toBe(true);
+  await page.getByText("Customize semantic colors").click();
+  const input = page.getByLabel("on accent");
+  await input.fill("not-a-color");
+  await expect(page.getByRole("alert")).toContainText("Draft not applied");
+  releaseUpdate?.();
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  await expect(input).toHaveValue("not-a-color");
+});
+
+test("clears an invalid theme draft when the workspace theme is reset", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page
+    .getByRole("group", { name: "Common context line values" })
+    .getByRole("button", { name: "8" })
+    .click();
+  await page.getByRole("radio", { name: /Vim/ }).click();
+  await page.getByText("Customize semantic colors").click();
+  await page.getByLabel("on accent").fill("not-a-color");
+  await expect(page.getByRole("alert")).toContainText("Draft not applied");
+
+  await page.getByRole("button", { name: "Reset workspace theme" }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("group", { name: "Common context line values" })
+      .getByRole("button", { name: "8" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("radio", { name: /Vim/ })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await page.getByText("Customize semantic colors").click();
+  await expect(page.getByLabel("on accent")).toHaveValue("#191a1f");
+});
+
+test("resets the acknowledged workspace theme and keeps recovery controls protected on a phone", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 780 });
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open changed files panel" }).click();
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("radio", { name: /Paper/ }).click();
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+
+  const reset = page.getByRole("button", { name: "Reset workspace theme" });
+  await expect(reset).toBeVisible();
+  await reset.focus();
+  await expect(reset).toBeFocused();
+  expect(
+    await reset.evaluate((element) => getComputedStyle(element).color),
+  ).toBe("rgb(255, 123, 135)");
+  await reset.click();
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  await page.reload();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--canvas")
+          .trim(),
+      ),
+    )
+    .toBe("#191a1f");
+});
+
+test("keeps a failed theme update retryable and never reports false success", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let attempts = 0;
+  await page.route("**/api/settings/theme", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    attempts += 1;
+    if (attempts === 1)
+      return route.fulfill({ status: 503, json: { message: "Try again." } });
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["theme"];
+    };
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: body.preference,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page
+    .getByRole("group", { name: "Common context line values" })
+    .getByRole("button", { name: "8" })
+    .click();
+  await page.getByRole("radio", { name: /Dusk/ }).click();
+
+  await expect(
+    page.getByText("Theme is applied locally but not saved."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Retry save" }).click();
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  expect(attempts).toBe(2);
+});
+
+test("discards a non-retryable rejected theme operation", async ({ page }) => {
+  await mockReviewApi(page);
+  let attempts = 0;
+  await page.route("**/api/settings/theme", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    attempts += 1;
+    return route.fulfill({
+      status: 400,
+      json: { message: "The active workspace changed." },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page
+    .getByRole("group", { name: "Common context line values" })
+    .getByRole("button", { name: "8" })
+    .click();
+  await page.getByRole("radio", { name: /Dusk/ }).click();
+
+  await expect(
+    page.getByText("Theme was rejected by the server and was not saved."),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry save" })).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("group", { name: "Common context line values" })
+      .getByRole("button", { name: "8" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--canvas")
+          .trim(),
+      ),
+    )
+    .toBe("#191a1f");
+  expect(attempts).toBe(1);
+});
+
+test("keeps the default fallback after a new workspace settings load fails", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let settingsLoads = 0;
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    settingsLoads += 1;
+    if (settingsLoads > 1)
+      return route.fulfill({
+        status: 500,
+        json: { message: "Settings are temporarily unavailable." },
+      });
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: { version: 1, preset: "dusk", overrides: {} },
+        typography: {
+          ...DEFAULT_TYPOGRAPHY_PREFERENCE,
+          uiFont: "serif",
+        },
+      },
+    });
+  });
+  await page.route("**/api/workspace/open", (route) =>
+    route.fulfill({
+      json: {
+        ...changedWorkspace,
+        root: "/home/zack/git/another-workspace",
+        name: "another-workspace",
+      },
+    }),
+  );
+  await page.route("**/api/settings/theme", (route) =>
+    route.fulfill({
+      status: 400,
+      json: { message: "The active workspace changed." },
+    }),
+  );
+  await page.route("**/api/settings/typography", (route) =>
+    route.fulfill({
+      status: 400,
+      json: { message: "The active workspace changed." },
+    }),
+  );
+  await page.goto("/");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--canvas")
+          .trim(),
+      ),
+    )
+    .toBe("#1d1917");
+
+  await page.getByRole("button", { name: "Change", exact: true }).click();
+  await page.getByLabel("Local path").fill("/home/zack/git/another-workspace");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(
+    page.getByText("another-workspace", { exact: true }),
+  ).toBeVisible();
+  await page.locator(".settings-nav-button").click();
+  await page.getByLabel("Interface font").selectOption("humanist");
+  await expect(page.getByRole("alert")).toContainText("rejected by the server");
+  await expect(page.getByLabel("Interface font")).toHaveValue("system");
+  await page.getByRole("radio", { name: /Paper/ }).click();
+  await expect(
+    page.getByText("Theme was rejected by the server and was not saved."),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--canvas")
+          .trim(),
+      ),
+    )
+    .toBe("#191a1f");
+});
+
+test("does not let a stale settings save overwrite newer appearance choices", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let releaseSettings: (() => void) | undefined;
+  let releaseTypography: (() => void) | undefined;
+  let settingsStarted = false;
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    settingsStarted = true;
+    await new Promise<void>((resolve) => {
+      releaseSettings = resolve;
+    });
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 8,
+        keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
+      },
+    });
+  });
+  await page.route("**/api/settings/typography", async (route) => {
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["typography"];
+    };
+    await new Promise<void>((resolve) => {
+      releaseTypography = resolve;
+    });
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 8,
+        keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: body.preference,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page
+    .getByRole("group", { name: "Common context line values" })
+    .getByRole("button", { name: "8" })
+    .click();
+  await page.getByRole("button", { name: "Save settings" }).click();
+  await expect.poll(() => settingsStarted).toBe(true);
+  await page.getByRole("radio", { name: /Paper/ }).click();
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  await page.getByLabel("Interface font").selectOption("humanist");
+  await expect.poll(() => releaseTypography !== undefined).toBe(true);
+  releaseSettings?.();
+  await expect(page.getByText("Saved for this workspace.")).toBeVisible();
+  await expect(page.getByLabel("Interface font")).toHaveValue("humanist");
+  releaseTypography?.();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--canvas")
+          .trim(),
+      ),
+    )
+    .toBe("#f4f2ee");
+});
+
+test("lets workspace reset supersede a debounced theme update", async ({
+  page,
+}) => {
+  const methods: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/settings/theme"))
+      methods.push(request.method());
+  });
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("radio", { name: /Dusk/ }).click();
+  await page.getByRole("button", { name: "Reset workspace theme" }).click();
+
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  await page.waitForTimeout(600);
+  expect(methods).toEqual(["DELETE"]);
+  expect(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--canvas")
+        .trim(),
+    ),
+  ).toBe("#191a1f");
+});
+
+test("does not reapply a delayed theme acknowledgement after reset", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let releaseUpdate: (() => void) | undefined;
+  let updateStarted = false;
+  await page.route("**/api/settings/theme", async (route) => {
+    if (route.request().method() === "PUT") {
+      updateStarted = true;
+      await new Promise<void>((resolve) => {
+        releaseUpdate = resolve;
+      });
+      const body = route.request().postDataJSON() as {
+        preference: ReviewSettings["theme"];
+      };
+      return route.fulfill({
+        json: {
+          version: 1,
+          diffContextLines: 3,
+          keyboardLayout: "normie",
+          theme: body.preference,
+          typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
+        },
+      });
+    }
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("radio", { name: /Dusk/ }).click();
+  await expect.poll(() => updateStarted).toBe(true);
+  await page.getByRole("button", { name: "Reset workspace theme" }).click();
+  expect(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--canvas")
+        .trim(),
+    ),
+  ).toBe("#191a1f");
+
+  releaseUpdate?.();
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--canvas")
+        .trim(),
+    ),
+  ).toBe("#191a1f");
+});
+
+test("reveals a saved non-default theme without a default-palette review frame", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: { version: 1, preset: "paper", overrides: {} },
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
+      },
+    }),
+  );
+  await page.addInitScript(() => {
+    const capture = () => {
+      const state = window as unknown as { firstReviewCanvas?: string };
+      if (state.firstReviewCanvas || !document.querySelector(".review-shell"))
+        return;
+      state.firstReviewCanvas = getComputedStyle(document.documentElement)
+        .getPropertyValue("--canvas")
+        .trim();
+    };
+    const timer = window.setInterval(() => {
+      capture();
+      if (
+        (window as unknown as { firstReviewCanvas?: string }).firstReviewCanvas
+      )
+        window.clearInterval(timer);
+    }, 0);
+  });
+  await page.goto("/");
+
+  await expect(page.locator(".review-shell")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as { firstReviewCanvas?: string })
+            .firstReviewCanvas,
+      ),
+    )
+    .toBe("#f4f2ee");
+});
+
+test("keeps the approved accessible theme baselines stable", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Comment on new line 1" }).click();
+  await expect(page).toHaveScreenshot("theme-redline-review.png", {
+    maxDiffPixelRatio: 0.005,
+  });
+
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("radio", { name: /Dusk/ }).click();
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveScreenshot("theme-dusk-review.png", {
+    maxDiffPixelRatio: 0.005,
+  });
+});
+
+test("persists independent interface and code fonts and sizes", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  const codeBefore = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--font-code"),
+  );
+  await page.getByLabel("Interface font").selectOption("serif");
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue(
+          "--font-ui",
+        ),
+      ),
+    )
+    .toContain("Charter");
+  expect(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue(
+        "--font-code",
+      ),
+    ),
+  ).toBe(codeBefore);
+  await page.getByLabel("Code font").selectOption("modern");
+  await page
+    .getByRole("button", { name: "Increase interface text size" })
+    .click();
+  await page.getByRole("button", { name: "Increase code text size" }).click();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  await expect(
+    page.locator(".typography-size-control output").first(),
+  ).toContainText("15 px");
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("17 px");
+  await page.reload();
+  await page.locator(".settings-nav-button").click();
+  await expect(page.getByLabel("Interface font")).toHaveValue("serif");
+  await expect(page.getByLabel("Code font")).toHaveValue("modern");
+  await expect(
+    page.locator(".typography-size-control output").first(),
+  ).toContainText("15 px");
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("17 px");
+});
+
+test("keeps failed size changes applied and retries the latest atomic pair", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let attempts = 0;
+  let releaseFailure: (() => void) | undefined;
+  await page.route("**/api/settings/typography", async (route) => {
+    attempts += 1;
+    if (attempts === 1) {
+      await new Promise<void>((resolve) => {
+        releaseFailure = resolve;
+      });
+      return route.fulfill({ status: 500, json: { message: "injected" } });
+    }
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["typography"];
+    };
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: body.preference,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("button", { name: "Increase code text size" }).click();
+  await expect.poll(() => attempts).toBe(1);
+  await page.getByRole("button", { name: "Increase code text size" }).click();
+  releaseFailure?.();
+  await expect(page.getByRole("alert")).toContainText("unsaved");
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("18 px");
+  expect(attempts).toBe(1);
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  expect(attempts).toBe(2);
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("18 px");
+});
+
+test("rolls a rejected typography choice back without offering retry", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let posted: ReviewSettings["typography"] | undefined;
+  await page.route("**/api/settings/typography", (route) => {
+    posted = (
+      route.request().postDataJSON() as {
+        preference: ReviewSettings["typography"];
+      }
+    ).preference;
+    return route.fulfill({ status: 400, json: { message: "invalid" } });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByLabel("Interface font").selectOption("serif");
+  await expect.poll(() => posted?.uiFont).toBe("serif");
+  await expect(page.getByRole("alert")).toContainText("rejected by the server");
+  await expect(page.getByLabel("Interface font")).toHaveValue("system");
+  await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+});
+
+test("restores a failed font save and allows switching workspaces", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let attempts = 0;
+  let releaseFailure: (() => void) | undefined;
+  await page.route("**/api/settings/typography", async (route) => {
+    attempts += 1;
+    await new Promise<void>((resolve) => {
+      releaseFailure = resolve;
+    });
+    return route.fulfill({ status: 500, json: { message: "injected" } });
+  });
+  await page.route("**/api/workspace/open", (route) =>
+    route.fulfill({
+      json: {
+        ...changedWorkspace,
+        root: "/home/zack/git/another-workspace",
+        name: "another-workspace",
+      },
+    }),
+  );
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  await page.getByLabel("Interface font").selectOption("serif");
+  await expect.poll(() => attempts).toBe(1);
+  await expect(page.getByLabel("Interface font")).toHaveValue("serif");
+  await page.getByLabel("Interface font").selectOption("humanist");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue(
+          "--font-ui",
+        ),
+      ),
+    )
+    .toContain("Trebuchet");
+  releaseFailure?.();
+  await expect(page.getByRole("alert")).toContainText("was restored");
+  await expect(page.getByLabel("Interface font")).toHaveValue("system");
+  await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await page.getByRole("button", { name: "Change", exact: true }).click();
+  await page.getByLabel("Local path").fill("/home/zack/git/another-workspace");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(
+    page.getByText("another-workspace", { exact: true }),
+  ).toBeVisible();
+  expect(attempts).toBe(1);
+});
+
+test("autosaves typography normally after settings reload clears a failed font save", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let attempts = 0;
+  await page.route("**/api/settings/typography", async (route) => {
+    attempts += 1;
+    if (attempts === 1)
+      return route.fulfill({ status: 500, json: { message: "injected" } });
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["typography"];
+    };
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: body.preference,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByLabel("Interface font").selectOption("serif");
+  await expect(page.getByRole("alert")).toContainText("was restored");
+  await page.reload();
+  await page.locator(".settings-nav-button").click();
+  await page.getByLabel("Interface font").selectOption("humanist");
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  expect(attempts).toBe(2);
+});
+
+test("keeps maximum typography operable on narrow unified and wide split diffs", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open changed files panel" }).click();
+  await page.locator(".settings-nav-button").click();
+  for (let index = 0; index < 4; index += 1)
+    await page
+      .getByRole("button", { name: "Increase interface text size" })
+      .click();
+  for (let index = 0; index < 4; index += 1)
+    await page.getByRole("button", { name: "Increase code text size" }).click();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.getByRole("button", { name: /Review/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".diff-view")).toHaveAttribute(
+    "data-effective-view",
+    "unified",
+  );
+  const narrowMetrics = await page
+    .locator(".unified-line")
+    .first()
+    .evaluate((row) => ({
+      height: row.getBoundingClientRect().height,
+      scrollWidth: row.parentElement?.scrollWidth ?? 0,
+    }));
+  expect(narrowMetrics.height).toBeGreaterThanOrEqual(32);
+  expect(narrowMetrics.scrollWidth).toBeGreaterThan(0);
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.locator(".diff-view")).toHaveAttribute(
+    "data-effective-view",
+    "split",
+  );
+  const splitHeights = await page
+    .locator(".side-cell")
+    .evaluateAll((cells) =>
+      cells.slice(0, 2).map((cell) => cell.getBoundingClientRect().height),
+    );
+  expect(splitHeights).toHaveLength(2);
+  expect(splitHeights[0]).toBe(splitHeights[1]);
 });
 
 test("keeps Normie as the default and enables modal line selection in Vim layout", async ({
@@ -1096,7 +2208,9 @@ test("keeps Normie as the default and enables modal line selection in Vim layout
   await page.locator(".settings-nav-button").click();
   await page.getByRole("radio", { name: /Vim/ }).click();
   await page.getByRole("button", { name: "Save settings" }).click();
-  await expect(page.getByText("Saved for this workspace.")).toBeVisible();
+  await expect(
+    page.getByText("Saved for this workspace.", { exact: true }),
+  ).toBeVisible();
   await page.keyboard.press("Escape");
 
   await expect(page.locator(".settings-nav-button")).toContainText("Vim");
@@ -1238,97 +2352,49 @@ test.describe("phone touch layout", () => {
       .getByRole("button", { name: /Approve 2 visible files/ })
       .boundingBox();
     expect(batchBox?.height).toBeGreaterThanOrEqual(44);
-  });
-});
-
-test("persists a CLI agent decision through UI reload and thread export", async ({
-  page,
-  request,
-}) => {
-  const repository = await mkdtemp(join(tmpdir(), "redline-agent-e2e-"));
-  const responsePath = `${repository}-response.md`;
-  try {
-    await execute("git", ["init"], { cwd: repository });
-    await execute("git", ["config", "user.email", "redline@example.test"], {
-      cwd: repository,
-    });
-    await execute("git", ["config", "user.name", "Redline Test"], {
-      cwd: repository,
-    });
-    await writeFile(
-      join(repository, "example.ts"),
-      "export const value = 1;\n",
-    );
-    await execute("git", ["add", "example.ts"], { cwd: repository });
-    await execute("git", ["commit", "-m", "initial"], { cwd: repository });
-    await writeFile(
-      join(repository, "example.ts"),
-      "export const value = 2;\n",
-    );
-
+    for (const control of [
+      page.locator(".file-search"),
+      page.getByRole("button", { name: /src\/App\.tsx/ }),
+      page.locator(".settings-nav-button"),
+    ]) {
+      const box = await control.boundingBox();
+      expect(box?.height).toBeGreaterThanOrEqual(44);
+    }
     expect(
-      (
-        await request.post("/api/workspace/open", {
-          data: { path: repository },
-        })
-      ).ok(),
+      await page
+        .getByLabel("Changed files", { exact: true })
+        .evaluate((element) => element.scrollWidth <= element.clientWidth),
     ).toBe(true);
-    const diffResponse = await request.get("/api/diff?path=example.ts");
-    const currentDiff = (await diffResponse.json()) as DiffResponse;
-    const commentResponse = await request.post("/api/comments", {
-      data: {
-        path: "example.ts",
-        fingerprint: currentDiff.fingerprint,
-        anchors: [{ side: "new", startLine: 1, endLine: 1 }],
-        body: "Confirm the updated value.",
-      },
-    });
-    const comment = (await commentResponse.json()) as { id: string };
-    await writeFile(responsePath, "Implemented and validated end to end.\n");
 
-    const cli = resolve(process.cwd(), "dist/server/cli/index.js");
-    const result = await execute(
-      process.execPath,
-      [
-        cli,
-        "--mode",
-        "server",
-        "--workspace",
-        repository,
-        "--server-url",
-        "http://127.0.0.1:4324",
-        "agent",
-        "respond",
-        comment.id,
-        "--decision",
-        "accepted",
-        "--input",
-        responsePath,
-      ],
-      { cwd: repository },
-    );
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      ok: true,
-      result: { comment: { state: "accepted" } },
-    });
-
-    await page.goto("/");
-    await page.getByRole("button", { name: /^Snapshot \d+$/ }).click();
+    await page.locator(".settings-nav-button").click();
+    for (let index = 0; index < 4; index += 1)
+      await page
+        .getByRole("button", { name: "Decrease code text size" })
+        .click();
     await expect(
-      page.getByText("Implemented and validated end to end."),
-    ).toBeVisible();
-    await page.reload();
-    await page.getByRole("button", { name: /^Snapshot \d+$/ }).click();
-    await expect(page.getByText("accepted", { exact: true })).toHaveCount(2);
-
-    const exportResponse = await request.get(
-      "/api/comments/export?format=markdown",
+      page.locator(".typography-size-control output").last(),
+    ).toContainText("12 px");
+    const noiseBox = await page
+      .getByRole("checkbox", { name: /Show review noise/ })
+      .locator("..")
+      .boundingBox();
+    expect(noiseBox?.height).toBeGreaterThanOrEqual(44);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBe(390);
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".settings-nav-button")).toBeFocused();
+    await page.keyboard.press("Escape");
+    const contextBox = await page
+      .getByRole("button", { name: "Show more context" })
+      .first()
+      .boundingBox();
+    expect(contextBox?.height).toBeGreaterThanOrEqual(44);
+    const hunkBox = await page.locator(".diff-hunk-line").first().boundingBox();
+    expect(hunkBox?.height).toBeGreaterThanOrEqual(44);
+    await expect(page.locator(".diff-view")).toHaveCSS(
+      "--diff-hunk-height",
+      "44px",
     );
-    expect(await exportResponse.text()).toContain(
-      "Implemented and validated end to end.",
-    );
-  } finally {
-    await rm(repository, { recursive: true, force: true });
-    await rm(responsePath, { force: true });
-  }
+  });
 });

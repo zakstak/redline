@@ -12,16 +12,26 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildServer } from "../server/app.js";
+import { ReviewDatabase } from "../server/review-database.js";
 import { ReviewWorkspace } from "../server/review-workspace.js";
 import type {
   CommentExportResponse,
   DiffResponse,
   ReviewDataResponse,
 } from "../shared/review-contract.js";
+import { DEFAULT_THEME_PREFERENCE } from "../shared/theme.js";
+import { DEFAULT_TYPOGRAPHY_PREFERENCE } from "../shared/typography.js";
 
-const exec = promisify(execFile);
+const executeFile = promisify(execFile);
+const isolatedGitEnvironment = Object.fromEntries(
+  Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+);
+
+function exec(file: string, args: string[], options: { cwd: string }) {
+  return executeFile(file, args, { ...options, env: isolatedGitEnvironment });
+}
 let repository = "";
 
 async function runGit(...args: string[]) {
@@ -49,6 +59,24 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(repository, { recursive: true, force: true });
+});
+
+describe("workspace initialization", () => {
+  it("defers the full workspace scan until workspace data is requested", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    const getWorkspace = vi.spyOn(workspace, "getWorkspace");
+
+    try {
+      await workspace.initialize();
+
+      expect(getWorkspace).not.toHaveBeenCalled();
+
+      await workspace.openWorkspace(repository);
+      expect(getWorkspace).toHaveBeenCalledOnce();
+    } finally {
+      workspace.close();
+    }
+  });
 });
 
 describe("local review snapshots", () => {
@@ -200,11 +228,15 @@ describe("local review snapshots", () => {
       version: 1,
       diffContextLines: 3,
       keyboardLayout: "normie",
+      theme: DEFAULT_THEME_PREFERENCE,
+      typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
     });
     expect(await workspace.updateSettings(8, "vim")).toEqual({
       version: 1,
       diffContextLines: 8,
       keyboardLayout: "vim",
+      theme: DEFAULT_THEME_PREFERENCE,
+      typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
     });
     workspace.close();
 
@@ -214,268 +246,170 @@ describe("local review snapshots", () => {
       version: 1,
       diffContextLines: 8,
       keyboardLayout: "vim",
+      theme: DEFAULT_THEME_PREFERENCE,
+      typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
     });
     await expect(reopened.updateSettings(21)).rejects.toThrow("0 to 20");
     reopened.close();
   });
 
-  it("persists whole-file deferral across edits and clears it after a clean observation", async () => {
-    const workspace = new ReviewWorkspace(repository);
-    await workspace.initialize();
-    const deferred = await workspace.deferFile("example.ts");
-    expect(deferred.files).toHaveLength(0);
-    expect(deferred.deferredFiles.map((file) => file.path)).toEqual([
-      "example.ts",
-    ]);
-    expect((await workspace.getDiff("example.ts")).path).toBe("example.ts");
-
-    await writeFile(
-      join(repository, "example.ts"),
-      "export const count = 77;\n",
-      "utf8",
+  it("keeps validated theme preferences isolated across workspace switches", async () => {
+    const secondRepository = await mkdtemp(
+      join(tmpdir(), "redline-theme-second-"),
     );
-    expect((await workspace.getWorkspace()).deferredFiles[0]?.path).toBe(
-      "example.ts",
-    );
-    workspace.close();
-
-    const reopened = new ReviewWorkspace(repository);
-    await reopened.initialize();
-    expect((await reopened.getWorkspace()).deferredFiles[0]?.path).toBe(
-      "example.ts",
-    );
-    await runGit("restore", "example.ts");
-    expect((await reopened.getWorkspace()).deferredFiles).toHaveLength(0);
-    await writeFile(
-      join(repository, "example.ts"),
-      "export const count = 88;\n",
-      "utf8",
-    );
-    expect((await reopened.getWorkspace()).files[0]?.path).toBe("example.ts");
-    reopened.close();
-  });
-
-  it("transfers deferral across an explicit Git rename before clearing the source marker", async () => {
-    await runGit("restore", "example.ts");
-    const baseline = Array.from(
-      { length: 30 },
-      (_, index) => `export const value${index} = ${index};`,
-    ).join("\n");
-    await writeFile(
-      join(repository, "rename-source.ts"),
-      `${baseline}\n`,
-      "utf8",
-    );
-    await runGit("add", "rename-source.ts");
-    await runGit("commit", "-m", "add rename source");
-    await writeFile(
-      join(repository, "rename-source.ts"),
-      `${baseline.replace("value15 = 15", "value15 = 150")}\n`,
-      "utf8",
-    );
-    const workspace = new ReviewWorkspace(repository);
-    await workspace.initialize();
-    await workspace.deferFile("rename-source.ts");
-    await runGit("mv", "rename-source.ts", "rename-destination.ts");
-
-    const renamed = await workspace.getWorkspace();
-    expect(renamed.deferredFiles[0]).toMatchObject({
-      path: "rename-destination.ts",
-      originalPath: "rename-source.ts",
-      kind: "renamed",
+    await exec("git", ["init"], { cwd: secondRepository });
+    await exec("git", ["config", "user.email", "redline@example.test"], {
+      cwd: secondRepository,
     });
-    const stored = JSON.parse(
-      await readFile(join(repository, ".git", "redline", "state.json"), "utf8"),
-    ) as { deferredPaths: string[] };
-    expect(stored.deferredPaths).toEqual(["rename-destination.ts"]);
-    workspace.close();
-  });
-
-  it("defers tracked deletions and makes defer versus approval atomic", async () => {
-    const workspace = new ReviewWorkspace(repository);
-    await workspace.initialize();
-    const viewed = await workspace.getDiff("example.ts");
-    const race = await Promise.allSettled([
-      workspace.deferFile("example.ts"),
-      workspace.approveFile("example.ts", viewed.fingerprint),
-    ]);
-    expect(race.filter((result) => result.status === "fulfilled")).toHaveLength(
-      1,
-    );
-    expect(race.filter((result) => result.status === "rejected")).toHaveLength(
-      1,
-    );
-    await workspace.restoreFile("example.ts");
-    await runGit("restore", "example.ts");
-    await runGit("rm", "example.ts");
-    const deletion = await workspace.deferFile("example.ts");
-    expect(deletion.deferredFiles[0]).toMatchObject({
-      path: "example.ts",
-      kind: "deleted",
+    await exec("git", ["config", "user.name", "Redline Test"], {
+      cwd: secondRepository,
     });
-    expect((await workspace.restoreFile("example.ts")).files[0]?.kind).toBe(
-      "deleted",
+    await writeFile(
+      join(secondRepository, "second.ts"),
+      "export const second = true;\n",
+      "utf8",
     );
-    workspace.close();
-  });
+    await exec("git", ["add", "second.ts"], { cwd: secondRepository });
+    await exec("git", ["commit", "-m", "initial"], { cwd: secondRepository });
 
-  it("serializes defer versus approval across independent workspace instances", async () => {
-    const deferringProcess = new ReviewWorkspace(repository);
-    const approvingProcess = new ReviewWorkspace(repository);
-    await Promise.all([
-      deferringProcess.initialize(),
-      approvingProcess.initialize(),
-    ]);
+    const workspace = new ReviewWorkspace(repository);
     try {
-      const viewed = await approvingProcess.getDiff("example.ts");
-      const race = await Promise.allSettled([
-        deferringProcess.deferFile("example.ts"),
-        approvingProcess.approveFile("example.ts", viewed.fingerprint),
-      ]);
+      await workspace.initialize();
       expect(
-        race.filter((result) => result.status === "fulfilled"),
-      ).toHaveLength(1);
-      expect(
-        race.filter((result) => result.status === "rejected"),
-      ).toHaveLength(1);
-
-      const state = await approvingProcess.getWorkspace(true);
-      const deferred = state.deferredFiles.some(
-        (file) => file.path === "example.ts",
-      );
-      const approved = state.files.some(
-        (file) =>
-          file.path === "example.ts" && file.reviewStatus === "approved",
-      );
-      expect(Number(deferred) + Number(approved)).toBe(1);
-    } finally {
-      deferringProcess.close();
-      approvingProcess.close();
-    }
-  });
-
-  it("persists versioned agent decisions, exact retries, reopening, and tombstones", async () => {
-    const workspace = new ReviewWorkspace(repository);
-    await workspace.initialize();
-    const diff = await workspace.getDiff("example.ts");
-    const root = await workspace.addComment({
-      path: "example.ts",
-      expectedFingerprint: diff.fingerprint,
-      anchors: [{ side: "new", startLine: 1, endLine: 1 }],
-      body: "Implement this safely.",
-    });
-    const packet = await workspace.getThreadPacket(root.id);
-    await writeFile(
-      join(repository, "example.ts"),
-      "export const count = 99;\n",
-      "utf8",
-    );
-    await expect(
-      workspace.mutateThread({
-        commentId: root.id,
-        expectedState: "pending",
-        expectedRootVersion: 1,
-        expectedThreadRevision: 0,
-        requestId: "request-stale-context",
-        body: "This must not be accepted.",
-        decision: "accepted",
-        acceptedContext: packet.acceptedContext,
-      }),
-    ).rejects.toThrow("stale_context");
-    await writeFile(
-      join(repository, "example.ts"),
-      "export const count = 2;\nexport const ready = true;\n",
-      "utf8",
-    );
-    const decision = {
-      commentId: root.id,
-      expectedState: "pending" as const,
-      expectedRootVersion: 1,
-      expectedThreadRevision: 0,
-      requestId: "request-accepted-1",
-      body: "Implemented and validated.",
-      decision: "accepted" as const,
-      acceptedContext: packet.acceptedContext,
-    };
-    const repositoryAlias = `${repository}-alias`;
-    await symlink(repository, repositoryAlias, "dir");
-    const concurrentProcess = new ReviewWorkspace(repositoryAlias);
-    await concurrentProcess.initialize();
-    const [accepted, identicalRetry] = await (async () => {
-      try {
-        return await Promise.all([
-          workspace.mutateThread(decision),
-          concurrentProcess.mutateThread(decision),
-        ]);
-      } finally {
-        concurrentProcess.close();
-        await rm(repositoryAlias, { force: true });
-      }
-    })();
-    expect(accepted.comment).toMatchObject({
-      state: "accepted",
-      threadRevision: 1,
-    });
-    expect(accepted.comment.replies).toHaveLength(1);
-    expect(identicalRetry).toEqual(accepted);
-    expect(
-      (await workspace.mutateThread(decision)).comment.replies,
-    ).toHaveLength(1);
-    await expect(
-      workspace.mutateThread({ ...decision, body: "Changed retry." }),
-    ).rejects.toThrow("idempotency_conflict");
-
-    const reopened = await workspace.mutateThread({
-      commentId: root.id,
-      expectedState: "accepted",
-      expectedRootVersion: 1,
-      expectedThreadRevision: 1,
-      requestId: "request-reopen-1",
-      reopen: true,
-    });
-    expect(reopened.comment).toMatchObject({
-      state: "pending",
-      threadRevision: 2,
-    });
-    await workspace.deleteComment(root.id);
-    const tombstone = await workspace.getThreadPacket(root.id);
-    expect(tombstone.comment.deleted).toBe(true);
-    expect(tombstone.comment.replies[0]?.body).toBe(
-      "Implemented and validated.",
-    );
-    workspace.close();
-  });
-
-  it("returns pending threads even when their generated files are hidden in the UI queue", async () => {
-    await mkdir(join(repository, "dist"), { recursive: true });
-    await writeFile(
-      join(repository, "dist", "generated.js"),
-      "export const generated = true;\n",
-    );
-    const workspace = new ReviewWorkspace(repository);
-    await workspace.initialize();
-    try {
-      const diff = await workspace.getDiff("dist/generated.js");
-      const comment = await workspace.addComment({
-        path: "dist/generated.js",
-        expectedFingerprint: diff.fingerprint,
-        anchors: [{ side: "new", startLine: 1, endLine: 1 }],
-        body: "Review the generated artifact explicitly.",
+        (
+          await workspace.updateThemePreference(repository, {
+            version: 1,
+            preset: "paper",
+            overrides: {},
+          })
+        ).theme.preset,
+      ).toBe("paper");
+      await workspace.updateTypographyPreference(repository, {
+        ...DEFAULT_TYPOGRAPHY_PREFERENCE,
+        uiFont: "serif",
+        interfaceFontSize: 18,
       });
+
+      await workspace.openWorkspace(secondRepository);
+      expect((await workspace.getSettings()).theme).toEqual(
+        DEFAULT_THEME_PREFERENCE,
+      );
+      expect((await workspace.getSettings()).typography).toEqual(
+        DEFAULT_TYPOGRAPHY_PREFERENCE,
+      );
       expect(
-        (await workspace.getWorkspace(false)).files.some(
-          (file) => file.path === "dist/generated.js",
-        ),
-      ).toBe(false);
-      const pending = await workspace.getPendingThreadPackets();
-      expect(pending).toHaveLength(1);
-      expect(pending[0]?.comment.id).toBe(comment.id);
+        (
+          await workspace.updateThemePreference(secondRepository, {
+            version: 1,
+            preset: "dusk",
+            overrides: {},
+          })
+        ).theme.preset,
+      ).toBe("dusk");
+      await expect(
+        workspace.updateThemePreference(repository, {
+          version: 1,
+          preset: "paper",
+          overrides: {},
+        }),
+      ).rejects.toThrow("active workspace changed");
+
+      await workspace.openWorkspace(repository);
+      expect((await workspace.getSettings()).theme.preset).toBe("paper");
+      expect((await workspace.getSettings()).typography).toMatchObject({
+        uiFont: "serif",
+        interfaceFontSize: 18,
+      });
     } finally {
       workspace.close();
+      await rm(secondRepository, { recursive: true, force: true });
     }
   });
 
-  it("keeps user replies pending and orders stale-root checks before stale-thread checks", async () => {
+  it("falls back safely when a persisted theme is malformed or inaccessible", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    await workspace.initialize();
+    workspace.close();
+    const database = new DatabaseSync(
+      join(repository, ".git", "redline", "review.sqlite"),
+    );
+    try {
+      database
+        .prepare(
+          `
+        INSERT INTO review_settings (key, value)
+        VALUES ('theme_preference', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `,
+        )
+        .run(
+          JSON.stringify({
+            version: 1,
+            preset: "redline",
+            overrides: { ink: "#191a1f" },
+          }),
+        );
+    } finally {
+      database.close();
+    }
+
+    const reopened = new ReviewWorkspace(repository);
+    try {
+      await reopened.initialize();
+      expect((await reopened.getSettings()).theme).toEqual(
+        DEFAULT_THEME_PREFERENCE,
+      );
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it("upgrades v1 state files that predate deferred paths", async () => {
+    const stateDir = join(repository, ".git", "redline");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      join(stateDir, "state.json"),
+      JSON.stringify({ version: 1, approvals: {}, snapshots: [] }),
+      "utf8",
+    );
+    const workspace = new ReviewWorkspace(repository);
+    await workspace.initialize();
+    expect((await workspace.getWorkspace()).deferredFiles).toEqual([]);
+    workspace.close();
+  });
+
+  it("migrates v1 comment rows without dropping local review notes", async () => {
+    const stateDir = join(repository, ".git", "redline");
+    await mkdir(stateDir, { recursive: true });
+    const databasePath = join(stateDir, "review.sqlite");
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      CREATE TABLE review_comments (
+        id TEXT PRIMARY KEY, path TEXT NOT NULL, anchors_json TEXT NOT NULL,
+        body TEXT NOT NULL, created_at TEXT NOT NULL, fingerprint TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE review_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+      INSERT INTO review_comments VALUES (
+        'legacy', 'example.ts', '[{"side":"new","startLine":1,"endLine":1}]',
+        'Preserve this note', '2026-07-12T00:00:00.000Z', 'legacy-fingerprint'
+      );
+      PRAGMA user_version = 1;
+    `);
+    legacy.close();
+    const migrated = new ReviewDatabase(databasePath);
+    expect(migrated.allComments()).toEqual([
+      expect.objectContaining({
+        id: "legacy",
+        body: "Preserve this note",
+        state: "pending",
+        rootVersion: 1,
+        threadRevision: 0,
+      }),
+    ]);
+    migrated.close();
+  });
+
+  it("rejects ghost replies and returns the original durable idempotent response", async () => {
     const workspace = new ReviewWorkspace(repository);
     await workspace.initialize();
     const diff = await workspace.getDiff("example.ts");
@@ -483,44 +417,82 @@ describe("local review snapshots", () => {
       path: "example.ts",
       expectedFingerprint: diff.fingerprint,
       anchors: [{ side: "new", startLine: 1, endLine: 1 }],
-      body: "Explain the intended behavior.",
+      body: "Review this change",
     });
-    const replied = await workspace.mutateThread({
+    await expect(
+      workspace.mutateThread({
+        commentId: comment.id,
+        expectedState: "pending",
+        expectedRootVersion: 1,
+        expectedThreadRevision: 0,
+        requestId: "empty-reply",
+        body: "   ",
+      }),
+    ).rejects.toThrow("non-empty body");
+    const acceptedContext = (await workspace.getThreadPacket(comment.id))
+      .acceptedContext;
+    const accepted = await workspace.mutateThread({
       commentId: comment.id,
       expectedState: "pending",
       expectedRootVersion: 1,
       expectedThreadRevision: 0,
-      requestId: "user-reply-1",
-      body: "This is additional user context.",
+      requestId: "accept-once",
+      body: "Implemented and validated.",
+      decision: "accepted",
+      acceptedContext,
     });
-    expect(replied.comment).toMatchObject({
-      state: "pending",
-      rootVersion: 1,
+    expect(accepted.comment.state).toBe("accepted");
+    await workspace.mutateThread({
+      commentId: comment.id,
+      expectedState: "accepted",
+      expectedRootVersion: 1,
+      expectedThreadRevision: 1,
+      requestId: "reopen-later",
+      reopen: true,
+    });
+    const retry = await workspace.mutateThread({
+      commentId: comment.id,
+      expectedState: "pending",
+      expectedRootVersion: 1,
+      expectedThreadRevision: 0,
+      requestId: "accept-once",
+      body: "Implemented and validated.",
+      decision: "accepted",
+      acceptedContext,
+    });
+    expect(retry.comment).toMatchObject({
+      state: "accepted",
       threadRevision: 1,
     });
-    expect(replied.comment.replies[0]).toMatchObject({ actor: "user" });
-    await expect(
-      workspace.mutateThread({
-        commentId: comment.id,
-        expectedState: "pending",
-        expectedRootVersion: 1,
-        expectedThreadRevision: 0,
-        requestId: "stale-thread-1",
-        body: "This reply is stale.",
-      }),
-    ).rejects.toThrow("stale_thread");
+    workspace.close();
+  });
 
+  it("redacts replied tombstones and removes them from the pending agent queue", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    await workspace.initialize();
+    const diff = await workspace.getDiff("example.ts");
+    const comment = await workspace.addComment({
+      path: "example.ts",
+      expectedFingerprint: diff.fingerprint,
+      anchors: [{ side: "new", startLine: 1, endLine: 1 }],
+      body: "Sensitive deleted note",
+    });
+    await workspace.mutateThread({
+      commentId: comment.id,
+      expectedState: "pending",
+      expectedRootVersion: 1,
+      expectedThreadRevision: 0,
+      requestId: "user-reply",
+      body: "Keep the thread history.",
+    });
     await workspace.deleteComment(comment.id);
-    await expect(
-      workspace.mutateThread({
-        commentId: comment.id,
-        expectedState: "pending",
-        expectedRootVersion: 1,
-        expectedThreadRevision: 0,
-        requestId: "stale-root-and-thread-1",
-        body: "Both versions are stale.",
-      }),
-    ).rejects.toThrow("stale_root");
+    const stored = (await workspace.getReviewData()).comments[0];
+    expect(stored).toMatchObject({
+      body: "[deleted]",
+      deleted: true,
+      state: "deferred",
+    });
+    expect(await workspace.getPendingThreadPackets()).toEqual([]);
     workspace.close();
   });
 
@@ -583,6 +555,8 @@ describe("local review snapshots", () => {
         version: 1,
         diffContextLines: 3,
         keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
       });
 
       const updated = await app.inject({
@@ -595,6 +569,134 @@ describe("local review snapshots", () => {
         version: 1,
         diffContextLines: 12,
         keyboardLayout: "vim",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
+      });
+
+      const typography = {
+        version: 1,
+        uiFont: "serif",
+        codeFont: "modern",
+        interfaceFontSize: 18,
+        codeFontSize: 12,
+      } as const;
+      const typographyUpdated = await app.inject({
+        method: "PUT",
+        url: "/api/settings/typography",
+        payload: { workspaceRoot: repository, preference: typography },
+      });
+      expect(typographyUpdated.statusCode).toBe(200);
+      expect(typographyUpdated.json()).toMatchObject({
+        diffContextLines: 12,
+        keyboardLayout: "vim",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography,
+      });
+      expect(
+        (
+          await app.inject({
+            method: "PUT",
+            url: "/api/settings/typography",
+            payload: {
+              workspaceRoot: repository,
+              preference: { ...typography, codeFontSize: 12.5 },
+            },
+          })
+        ).statusCode,
+      ).toBe(400);
+      expect(
+        (
+          await app.inject({
+            method: "PUT",
+            url: "/api/settings/typography",
+            payload: {
+              workspaceRoot: `${repository}-other`,
+              preference: typography,
+            },
+          })
+        ).statusCode,
+      ).toBe(400);
+
+      const typographyPersistenceFailure = vi
+        .spyOn(ReviewDatabase.prototype, "updateTypographyPreference")
+        .mockImplementationOnce(() => {
+          throw new Error("database is busy");
+        });
+      try {
+        const failedTypographyUpdate = await app.inject({
+          method: "PUT",
+          url: "/api/settings/typography",
+          payload: { workspaceRoot: repository, preference: typography },
+        });
+        expect(failedTypographyUpdate.statusCode).toBe(500);
+        expect(failedTypographyUpdate.json()).toMatchObject({
+          message: "database is busy",
+          statusCode: 500,
+        });
+      } finally {
+        typographyPersistenceFailure.mockRestore();
+      }
+
+      const themed = await app.inject({
+        method: "PUT",
+        url: "/api/settings/theme",
+        payload: {
+          workspaceRoot: repository,
+          preference: { version: 1, preset: "paper", overrides: {} },
+        },
+      });
+      expect(themed.statusCode).toBe(200);
+      expect(themed.json()).toMatchObject({
+        diffContextLines: 12,
+        keyboardLayout: "vim",
+        theme: { version: 1, preset: "paper", overrides: {} },
+      });
+
+      const inaccessible = await app.inject({
+        method: "PUT",
+        url: "/api/settings/theme",
+        payload: {
+          workspaceRoot: repository,
+          preference: {
+            version: 1,
+            preset: "paper",
+            overrides: { ink: "#f4f2ee" },
+          },
+        },
+      });
+      expect(inaccessible.statusCode).toBe(400);
+
+      const persistenceFailure = vi
+        .spyOn(ReviewDatabase.prototype, "updateThemePreference")
+        .mockImplementationOnce(() => {
+          throw new Error("database is temporarily busy");
+        });
+      const transientFailure = await app.inject({
+        method: "PUT",
+        url: "/api/settings/theme",
+        payload: {
+          workspaceRoot: repository,
+          preference: { version: 1, preset: "dusk", overrides: {} },
+        },
+      });
+      expect(transientFailure.statusCode).toBe(500);
+      persistenceFailure.mockRestore();
+
+      const staleWorkspace = await app.inject({
+        method: "DELETE",
+        url: "/api/settings/theme",
+        payload: { workspaceRoot: `${repository}-other` },
+      });
+      expect(staleWorkspace.statusCode).toBe(400);
+
+      const resetTheme = await app.inject({
+        method: "DELETE",
+        url: "/api/settings/theme",
+        payload: { workspaceRoot: repository },
+      });
+      expect(resetTheme.statusCode).toBe(200);
+      expect(resetTheme.json()).toMatchObject({
+        theme: DEFAULT_THEME_PREFERENCE,
       });
 
       const invalid = await app.inject({

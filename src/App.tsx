@@ -18,6 +18,26 @@ import type {
   WorkspaceResponse,
 } from "../shared/review-contract.js";
 import {
+  DEFAULT_THEME_PREFERENCE,
+  THEME_COLOR_ROLES,
+  THEME_PRESETS,
+  evaluateTheme,
+  normalizeThemeColor,
+  resolveTheme,
+  themeCssVariables,
+  type ThemeColorRole,
+  type ThemePreference,
+  type ThemePresetId,
+} from "../shared/theme.js";
+import {
+  CODE_FONT_OPTIONS,
+  DEFAULT_TYPOGRAPHY_PREFERENCE,
+  TYPOGRAPHY_SIZE_CONTRACT,
+  UI_FONT_OPTIONS,
+  typographyCssVariables,
+  type TypographyPreference,
+} from "../shared/typography.js";
+import {
   DiffView,
   type DiffSearchStatus,
   type DiffViewHandle,
@@ -32,9 +52,50 @@ interface ApiErrorPayload {
   message?: string;
 }
 
+class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 interface PendingCommentDeletion {
   comment: ReviewComment;
   workspaceRoot: string;
+}
+
+type ThemeSaveState = "saved" | "saving" | "failed" | "rejected";
+type ThemeSaveOperation = {
+  kind: "update" | "reset";
+  preference?: ThemePreference;
+  revision: number;
+  workspaceRoot: string;
+};
+type TypographySaveState = "saved" | "saving" | "failed" | "rejected";
+type TypographySaveOperation = {
+  preference: TypographyPreference;
+  revision: number;
+  workspaceRoot: string;
+  source: "font" | "size" | "reset";
+};
+
+function applyTheme(preference: ThemePreference) {
+  for (const [property, value] of Object.entries(
+    themeCssVariables(preference),
+  )) {
+    document.documentElement.style.setProperty(property, value);
+  }
+  document.documentElement.style.colorScheme =
+    THEME_PRESETS[preference.preset].colorScheme;
+}
+
+function applyTypography(preference: TypographyPreference) {
+  for (const [property, value] of Object.entries(
+    typographyCssVariables(preference),
+  ))
+    document.documentElement.style.setProperty(property, value);
 }
 
 function reviewHintWasDismissed() {
@@ -58,8 +119,9 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
     const payload = (await response
       .json()
       .catch(() => ({}))) as ApiErrorPayload;
-    throw new Error(
+    throw new ApiError(
       payload.message || `Local request failed with status ${response.status}.`,
+      response.status,
     );
   }
 
@@ -328,15 +390,455 @@ function LoadingShell() {
 
 const contextPresets = [0, 3, 5, 8, 12, 20];
 
+function ThemeEditor({
+  onChange,
+  onResetWorkspace,
+  onRetry,
+  preference,
+  saveState,
+}: {
+  onChange: (preference: ThemePreference) => void;
+  onResetWorkspace: () => void;
+  onRetry: () => void;
+  preference: ThemePreference;
+  saveState: ThemeSaveState;
+}) {
+  const [preset, setPreset] = useState<ThemePresetId>(preference.preset);
+  const [draft, setDraft] = useState<Record<ThemeColorRole, string>>(() =>
+    resolveTheme(preference),
+  );
+  const [draftErrors, setDraftErrors] = useState<string[]>([]);
+  const [draftWarnings, setDraftWarnings] = useState<string[]>(() =>
+    evaluateTheme(resolveTheme(preference)).warnings.map(
+      (finding) =>
+        `${finding.foreground} on ${finding.background}: ${finding.nonColorCue}`,
+    ),
+  );
+  const invalidDraftRef = useRef(false);
+
+  useEffect(() => {
+    if (invalidDraftRef.current) return;
+    setPreset(preference.preset);
+    setDraft(resolveTheme(preference));
+    setDraftErrors([]);
+    setDraftWarnings(
+      evaluateTheme(resolveTheme(preference)).warnings.map(
+        (finding) =>
+          `${finding.foreground} on ${finding.background}: ${finding.nonColorCue}`,
+      ),
+    );
+  }, [preference]);
+
+  const evaluateDraft = (
+    nextPreset: ThemePresetId,
+    nextDraft: Record<ThemeColorRole, string>,
+  ) => {
+    const normalized = {} as Record<ThemeColorRole, string>;
+    const malformed: string[] = [];
+    for (const role of THEME_COLOR_ROLES) {
+      const value = normalizeThemeColor(nextDraft[role]);
+      if (value) normalized[role] = value;
+      else malformed.push(`${role}: use a 3, 4, 6, or 8 digit hex color.`);
+    }
+    if (malformed.length > 0) {
+      invalidDraftRef.current = true;
+      setDraftErrors(malformed);
+      setDraftWarnings([]);
+      return;
+    }
+    const evaluation = evaluateTheme(normalized);
+    if (!evaluation.valid) {
+      invalidDraftRef.current = true;
+      setDraftErrors(
+        evaluation.errors.map(
+          (finding) =>
+            `${finding.foreground} on ${finding.background}: ${finding.ratio.toFixed(2)}:1, ` +
+            `${finding.criterion} requires ${finding.threshold}:1.`,
+        ),
+      );
+      setDraftWarnings([]);
+      return;
+    }
+    invalidDraftRef.current = false;
+    const base = THEME_PRESETS[nextPreset].colors;
+    const overrides = Object.fromEntries(
+      THEME_COLOR_ROLES.flatMap((role) =>
+        normalized[role] === base[role] ? [] : [[role, normalized[role]]],
+      ),
+    ) as ThemePreference["overrides"];
+    setDraftErrors([]);
+    setDraftWarnings(
+      evaluation.warnings.map(
+        (finding) =>
+          `${finding.foreground} on ${finding.background}: ${finding.nonColorCue}`,
+      ),
+    );
+    onChange({ version: 1, preset: nextPreset, overrides });
+  };
+
+  const choosePreset = (nextPreset: ThemePresetId) => {
+    invalidDraftRef.current = false;
+    const colors = { ...THEME_PRESETS[nextPreset].colors };
+    setPreset(nextPreset);
+    setDraft(colors);
+    setDraftErrors([]);
+    setDraftWarnings(
+      evaluateTheme(colors).warnings.map(
+        (finding) =>
+          `${finding.foreground} on ${finding.background}: ${finding.nonColorCue}`,
+      ),
+    );
+    onChange({ version: 1, preset: nextPreset, overrides: {} });
+  };
+
+  const updateRole = (role: ThemeColorRole, value: string) => {
+    const next = { ...draft, [role]: value };
+    setDraft(next);
+    evaluateDraft(preset, next);
+  };
+
+  return (
+    <section
+      className="settings-section theme-settings-section"
+      aria-labelledby="theme-heading"
+    >
+      <div className="settings-section-copy">
+        <h2 id="theme-heading">Review theme</h2>
+        <p>
+          Choose a preset or tune semantic colors. Valid complete palettes apply
+          immediately and autosave here.
+        </p>
+      </div>
+
+      <div className="theme-editor">
+        <div
+          aria-label="Theme preset"
+          className="theme-presets"
+          role="radiogroup"
+        >
+          {Object.values(THEME_PRESETS).map((candidate) => (
+            <button
+              aria-checked={preset === candidate.id}
+              key={candidate.id}
+              onClick={() => choosePreset(candidate.id)}
+              role="radio"
+              type="button"
+            >
+              <span
+                aria-hidden="true"
+                className="theme-preset-swatch"
+                style={{
+                  background: candidate.colors.canvas,
+                  borderColor: candidate.colors.accentStrong,
+                }}
+              />
+              <span>
+                <strong>{candidate.name}</strong>
+                <small>{candidate.description}</small>
+              </span>
+              {preset === candidate.id ? (
+                <span className="theme-selected-label">Selected</span>
+              ) : null}
+            </button>
+          ))}
+        </div>
+
+        <details className="theme-customizer">
+          <summary>Customize semantic colors</summary>
+          <p>
+            Draft values stay protected here until the complete palette passes
+            required contrast.
+          </p>
+          <div className="theme-color-grid">
+            {THEME_COLOR_ROLES.map((role) => {
+              const normalized = normalizeThemeColor(draft[role]);
+              return (
+                <label key={role}>
+                  <span>
+                    {role.replace(
+                      /[A-Z]/g,
+                      (letter) => ` ${letter.toLowerCase()}`,
+                    )}
+                  </span>
+                  <span className="theme-color-input">
+                    <i
+                      aria-hidden="true"
+                      style={{ background: normalized ?? "transparent" }}
+                    />
+                    <input
+                      aria-invalid={!normalized}
+                      onChange={(event) => updateRole(role, event.target.value)}
+                      spellCheck={false}
+                      value={draft[role]}
+                    />
+                    <button
+                      aria-label={`Reset ${role}`}
+                      disabled={
+                        draft[role] === THEME_PRESETS[preset].colors[role]
+                      }
+                      onClick={() =>
+                        updateRole(role, THEME_PRESETS[preset].colors[role])
+                      }
+                      type="button"
+                    >
+                      Reset
+                    </button>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          <button
+            className="theme-clear-button"
+            onClick={() => choosePreset(preset)}
+            type="button"
+          >
+            Clear custom colors
+          </button>
+        </details>
+
+        {draftErrors.length > 0 ? (
+          <div className="theme-validation" role="alert">
+            <strong>Draft not applied</strong>
+            <ul>
+              {draftErrors.map((error) => (
+                <li key={error}>{error}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {draftErrors.length === 0 && draftWarnings.length > 0 ? (
+          <details className="theme-warnings">
+            <summary>
+              {draftWarnings.length} non-essential contrast warning
+              {draftWarnings.length === 1 ? "" : "s"}
+            </summary>
+            <ul>
+              {draftWarnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+
+        <div className="theme-save-row">
+          <p aria-live="polite">
+            {saveState === "saving"
+              ? "Saving theme for this workspace."
+              : saveState === "failed"
+                ? "Theme is applied locally but not saved."
+                : saveState === "rejected"
+                  ? "Theme was rejected by the server and was not saved."
+                  : "Theme saved for this workspace."}
+          </p>
+          {saveState === "failed" ? (
+            <button onClick={onRetry} type="button">
+              Retry save
+            </button>
+          ) : null}
+          <button
+            className="theme-workspace-reset"
+            onClick={onResetWorkspace}
+            type="button"
+          >
+            Reset workspace theme
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TypographyEditor({
+  onChange,
+  onRetry,
+  preference,
+  saveState,
+  unsaved,
+}: {
+  onChange: (
+    preference: TypographyPreference,
+    source: TypographySaveOperation["source"],
+  ) => void;
+  onRetry: () => void;
+  preference: TypographyPreference;
+  saveState: TypographySaveState;
+  unsaved: boolean;
+}) {
+  const update = (
+    patch: Partial<TypographyPreference>,
+    source: TypographySaveOperation["source"],
+  ) => onChange({ ...preference, ...patch }, source);
+  const sizeControl = (
+    key: "interfaceFontSize" | "codeFontSize",
+    contract: (typeof TYPOGRAPHY_SIZE_CONTRACT)[keyof typeof TYPOGRAPHY_SIZE_CONTRACT],
+  ) => (
+    <div className="typography-size-control">
+      <button
+        aria-label={`Decrease ${contract.label.toLowerCase()} text size`}
+        disabled={preference[key] <= contract.min}
+        onClick={() =>
+          update({ [key]: preference[key] - contract.step }, "size")
+        }
+        type="button"
+      >
+        −
+      </button>
+      <output aria-label={`${contract.label} text size`} aria-live="polite">
+        <strong>{preference[key]} px</strong>
+        <small>
+          {contract.min}–{contract.max} px
+        </small>
+      </output>
+      <button
+        aria-label={`Increase ${contract.label.toLowerCase()} text size`}
+        disabled={preference[key] >= contract.max}
+        onClick={() =>
+          update({ [key]: preference[key] + contract.step }, "size")
+        }
+        type="button"
+      >
+        +
+      </button>
+    </div>
+  );
+
+  return (
+    <section
+      className="settings-section typography-settings"
+      aria-labelledby="typography-heading"
+    >
+      <div className="settings-section-copy">
+        <h2 id="typography-heading">Typography</h2>
+        <p>
+          Choose offline font stacks and size interface and source text
+          independently.
+        </p>
+      </div>
+      <div className="typography-controls">
+        <label>
+          <span>Interface font</span>
+          <small>Navigation, controls, comments, and prose</small>
+          <select
+            onChange={(event) =>
+              update(
+                {
+                  uiFont: event.target.value as TypographyPreference["uiFont"],
+                },
+                "font",
+              )
+            }
+            value={preference.uiFont}
+          >
+            {Object.entries(UI_FONT_OPTIONS).map(([id, option]) => (
+              <option key={id} style={{ fontFamily: option.stack }} value={id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {sizeControl("interfaceFontSize", TYPOGRAPHY_SIZE_CONTRACT.interface)}
+        <label>
+          <span>Code font</span>
+          <small>Diff source, line numbers, and code paths</small>
+          <select
+            onChange={(event) =>
+              update(
+                {
+                  codeFont: event.target
+                    .value as TypographyPreference["codeFont"],
+                },
+                "font",
+              )
+            }
+            value={preference.codeFont}
+          >
+            {Object.entries(CODE_FONT_OPTIONS).map(([id, option]) => (
+              <option key={id} style={{ fontFamily: option.stack }} value={id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {sizeControl("codeFontSize", TYPOGRAPHY_SIZE_CONTRACT.code)}
+        <div className="typography-save-row">
+          <p
+            aria-live="polite"
+            role={
+              saveState === "failed" || saveState === "rejected"
+                ? "alert"
+                : "status"
+            }
+          >
+            {saveState === "saving"
+              ? "Saving typography…"
+              : saveState === "failed"
+                ? unsaved
+                  ? "Typography is unsaved."
+                  : "The font choice could not be saved and was restored."
+                : saveState === "rejected"
+                  ? "Typography was rejected by the server and was restored."
+                  : "Typography saved for this workspace."}
+          </p>
+          {saveState === "failed" && unsaved ? (
+            <button onClick={onRetry} type="button">
+              Retry
+            </button>
+          ) : null}
+          <button
+            disabled={
+              preference.uiFont === DEFAULT_TYPOGRAPHY_PREFERENCE.uiFont &&
+              preference.codeFont === DEFAULT_TYPOGRAPHY_PREFERENCE.codeFont &&
+              preference.interfaceFontSize ===
+                DEFAULT_TYPOGRAPHY_PREFERENCE.interfaceFontSize &&
+              preference.codeFontSize ===
+                DEFAULT_TYPOGRAPHY_PREFERENCE.codeFontSize
+            }
+            onClick={() => onChange(DEFAULT_TYPOGRAPHY_PREFERENCE, "reset")}
+            type="button"
+          >
+            Reset typography
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function SettingsPage({
+  themeEditorRevision,
+  includeNoise,
   onBack,
+  onIncludeNoiseChange,
   onSaved,
+  onThemeChange,
+  onThemeReset,
+  onThemeRetry,
+  onTypographyChange,
+  onTypographyRetry,
   settings,
+  themeSaveState,
+  typographySaveState,
+  typographyUnsaved,
   workspace,
 }: {
+  themeEditorRevision: number;
+  includeNoise: boolean;
   onBack: () => void;
+  onIncludeNoiseChange: (include: boolean) => void;
   onSaved: (settings: ReviewSettings) => void;
+  onThemeChange: (preference: ThemePreference) => void;
+  onThemeReset: () => void;
+  onThemeRetry: () => void;
+  onTypographyChange: (
+    preference: TypographyPreference,
+    source: TypographySaveOperation["source"],
+  ) => void;
+  onTypographyRetry: () => void;
   settings: ReviewSettings;
+  themeSaveState: ThemeSaveState;
+  typographySaveState: TypographySaveState;
+  typographyUnsaved: boolean;
   workspace: WorkspaceResponse;
 }) {
   const [draft, setDraft] = useState(String(settings.diffContextLines));
@@ -471,6 +973,38 @@ function SettingsPage({
         </section>
 
         <section
+          className="settings-section settings-noise-section"
+          aria-labelledby="review-noise-heading"
+        >
+          <div className="settings-section-copy">
+            <h2 id="review-noise-heading">File-list visibility</h2>
+            <p id="review-noise-help">
+              Include generated and binary files in this browser tab. Redline
+              resets this view when the page reloads.
+            </p>
+          </div>
+          <label className="noise-toggle settings-noise-toggle">
+            <input
+              aria-describedby="review-noise-help"
+              checked={includeNoise}
+              onChange={(event) => onIncludeNoiseChange(event.target.checked)}
+              type="checkbox"
+            />
+            <span className="toggle-track">
+              <span />
+            </span>
+            <span>
+              Show review noise
+              <small>
+                {includeNoise
+                  ? "Generated and binary files are visible"
+                  : `${workspace.hiddenNoiseCount} generated or binary hidden`}
+              </small>
+            </span>
+          </label>
+        </section>
+
+        <section
           className="settings-section keyboard-layout-section"
           aria-labelledby="keyboard-layout-heading"
         >
@@ -519,6 +1053,23 @@ function SettingsPage({
             </button>
           </div>
         </section>
+
+        <ThemeEditor
+          key={themeEditorRevision}
+          onChange={onThemeChange}
+          onResetWorkspace={onThemeReset}
+          onRetry={onThemeRetry}
+          preference={settings.theme}
+          saveState={themeSaveState}
+        />
+
+        <TypographyEditor
+          onChange={onTypographyChange}
+          onRetry={onTypographyRetry}
+          preference={settings.typography}
+          saveState={typographySaveState}
+          unsaved={typographyUnsaved}
+        />
 
         <section className="settings-storage" aria-labelledby="storage-heading">
           <DatabaseIcon />
@@ -588,7 +1139,16 @@ export default function App() {
     version: 1,
     diffContextLines: 3,
     keyboardLayout: "normie",
+    theme: DEFAULT_THEME_PREFERENCE,
+    typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
   });
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [themeSaveState, setThemeSaveState] = useState<ThemeSaveState>("saved");
+  const [themeUnsaved, setThemeUnsaved] = useState(false);
+  const [themeEditorRevision, setThemeEditorRevision] = useState(0);
+  const [typographySaveState, setTypographySaveState] =
+    useState<TypographySaveState>("saved");
+  const [typographyUnsaved, setTypographyUnsaved] = useState(false);
   const [contextLines, setContextLines] = useState(settings.diffContextLines);
   const [diff, setDiff] = useState<DiffResponse | null>(null);
   const [diffWorkspaceRoot, setDiffWorkspaceRoot] = useState("");
@@ -622,6 +1182,7 @@ export default function App() {
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
   const [watchState, setWatchState] = useState<WatchState>("connecting");
   const fileSearchRef = useRef<HTMLInputElement>(null);
+  const settingsNavRef = useRef<HTMLButtonElement>(null);
   const filePanelRef = useRef<HTMLElement>(null);
   const filePanelToggleRef = useRef<HTMLButtonElement>(null);
   const filePanelReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -637,6 +1198,7 @@ export default function App() {
   const diffRequestRef = useRef(0);
   const workspaceRequestRef = useRef(0);
   const settingsRequestRef = useRef(0);
+  const includeNoiseRef = useRef(includeNoise);
   const workspaceOpenRef = useRef(false);
   const workspaceEpochRef = useRef(0);
   const reviewPanelRef = useRef<HTMLElement>(null);
@@ -648,17 +1210,31 @@ export default function App() {
   const visibleApprovalMessageTimerRef = useRef<number | null>(null);
   const vimGStartedAtRef = useRef(0);
   const activeWorkspaceRootRef = useRef("");
+  const themeQueueRef = useRef<ThemeSaveOperation[]>([]);
+  const themeMutationInFlightRef = useRef(false);
+  const latestThemeIntentRef = useRef(0);
+  const persistedThemeRef = useRef<ThemePreference>(DEFAULT_THEME_PREFERENCE);
+  const themeDebounceRef = useRef<number | null>(null);
+  const flushThemeQueueRef = useRef<() => void>(() => undefined);
+  const typographyQueueRef = useRef<TypographySaveOperation | null>(null);
+  const typographyMutationInFlightRef = useRef(false);
+  const typographyPausedRef = useRef(false);
+  const latestTypographyIntentRef = useRef(0);
+  const confirmedTypographyRef = useRef(DEFAULT_TYPOGRAPHY_PREFERENCE);
+  const desiredTypographyRef = useRef(DEFAULT_TYPOGRAPHY_PREFERENCE);
+  const flushTypographyQueueRef = useRef<() => void>(() => undefined);
   activeWorkspaceRootRef.current = workspace?.root ?? "";
+  includeNoiseRef.current = includeNoise;
 
   const loadWorkspace = useCallback(
-    async (silent = false) => {
+    async (silent = false, includeNoiseOverride?: boolean) => {
       if (workspaceOpenRef.current) return null;
       const requestId = ++workspaceRequestRef.current;
       if (silent) setRefreshing(true);
       else setLoadingWorkspace(true);
       try {
         const nextWorkspace = await api<WorkspaceResponse>(
-          `/api/workspace?includeNoise=${includeNoise}`,
+          `/api/workspace?includeNoise=${includeNoiseOverride ?? includeNoiseRef.current}`,
         );
         if (
           requestId !== workspaceRequestRef.current ||
@@ -705,7 +1281,7 @@ export default function App() {
         }
       }
     },
-    [includeNoise],
+    [],
   );
 
   const loadSettings = useCallback(async () => {
@@ -713,11 +1289,45 @@ export default function App() {
     try {
       const nextSettings = await api<ReviewSettings>("/api/settings");
       if (requestId !== settingsRequestRef.current) return null;
-      setSettings(nextSettings);
+      const themeSavePending =
+        themeDebounceRef.current !== null ||
+        themeMutationInFlightRef.current ||
+        themeQueueRef.current.length > 0;
+      if (!themeSavePending) applyTheme(nextSettings.theme);
+      if (!themeSavePending) persistedThemeRef.current = nextSettings.theme;
+      setSettings((current) => ({
+        ...nextSettings,
+        theme: themeSavePending ? current.theme : nextSettings.theme,
+      }));
       setContextLines(nextSettings.diffContextLines);
+      setSettingsLoaded(true);
+      if (!themeSavePending) {
+        setThemeSaveState("saved");
+        setThemeUnsaved(false);
+      }
+      applyTypography(nextSettings.typography);
+      confirmedTypographyRef.current = nextSettings.typography;
+      desiredTypographyRef.current = nextSettings.typography;
+      typographyQueueRef.current = null;
+      typographyPausedRef.current = false;
+      setTypographySaveState("saved");
+      setTypographyUnsaved(false);
       return nextSettings;
     } catch (error) {
       if (requestId !== settingsRequestRef.current) return null;
+      persistedThemeRef.current = DEFAULT_THEME_PREFERENCE;
+      applyTheme(DEFAULT_THEME_PREFERENCE);
+      applyTypography(DEFAULT_TYPOGRAPHY_PREFERENCE);
+      confirmedTypographyRef.current = DEFAULT_TYPOGRAPHY_PREFERENCE;
+      desiredTypographyRef.current = DEFAULT_TYPOGRAPHY_PREFERENCE;
+      typographyQueueRef.current = null;
+      typographyPausedRef.current = false;
+      setSettings((current) => ({
+        ...current,
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
+      }));
+      setSettingsLoaded(true);
       setActionError(
         error instanceof Error
           ? error.message
@@ -726,6 +1336,264 @@ export default function App() {
       return null;
     }
   }, []);
+
+  const flushThemeQueue = useCallback(async () => {
+    if (themeMutationInFlightRef.current) return;
+    const operation = themeQueueRef.current.shift();
+    if (!operation) {
+      setThemeSaveState("saved");
+      setThemeUnsaved(false);
+      return;
+    }
+    themeMutationInFlightRef.current = true;
+    setThemeSaveState("saving");
+    try {
+      const updated = await api<ReviewSettings>(
+        "/api/settings/theme",
+        operation.kind === "reset"
+          ? {
+              method: "DELETE",
+              body: JSON.stringify({ workspaceRoot: operation.workspaceRoot }),
+            }
+          : {
+              method: "PUT",
+              body: JSON.stringify({
+                workspaceRoot: operation.workspaceRoot,
+                preference: operation.preference,
+              }),
+            },
+      );
+      if (activeWorkspaceRootRef.current === operation.workspaceRoot)
+        persistedThemeRef.current = updated.theme;
+      if (
+        activeWorkspaceRootRef.current === operation.workspaceRoot &&
+        operation.revision === latestThemeIntentRef.current
+      ) {
+        applyTheme(updated.theme);
+        setSettings((current) => ({ ...current, theme: updated.theme }));
+      }
+      themeMutationInFlightRef.current = false;
+      if (themeQueueRef.current.length > 0) flushThemeQueueRef.current();
+      else if (operation.revision === latestThemeIntentRef.current) {
+        setThemeSaveState("saved");
+        setThemeUnsaved(false);
+      } else {
+        setThemeSaveState("saving");
+        setThemeUnsaved(true);
+      }
+    } catch (error) {
+      themeMutationInFlightRef.current = false;
+      const retryable = !(error instanceof ApiError) || error.status >= 500;
+      if (operation.revision === latestThemeIntentRef.current) {
+        if (retryable) {
+          themeQueueRef.current.unshift(operation);
+          setThemeSaveState("failed");
+          setThemeUnsaved(true);
+        } else {
+          const persistedTheme = persistedThemeRef.current;
+          applyTheme(persistedTheme);
+          setSettings((current) => ({ ...current, theme: persistedTheme }));
+          setThemeEditorRevision((current) => current + 1);
+          setThemeSaveState("rejected");
+          setThemeUnsaved(false);
+        }
+      } else {
+        setThemeSaveState("saving");
+        setThemeUnsaved(true);
+        if (themeQueueRef.current.length > 0) flushThemeQueueRef.current();
+      }
+    }
+  }, []);
+  flushThemeQueueRef.current = () => void flushThemeQueue();
+
+  const queueThemePreference = useCallback((preference: ThemePreference) => {
+    const workspaceRoot = activeWorkspaceRootRef.current;
+    if (!workspaceRoot) return;
+    applyTheme(preference);
+    setSettings((current) => ({ ...current, theme: preference }));
+    setThemeSaveState("saving");
+    setThemeUnsaved(true);
+    const revision = ++latestThemeIntentRef.current;
+    if (themeDebounceRef.current !== null)
+      window.clearTimeout(themeDebounceRef.current);
+    themeDebounceRef.current = window.setTimeout(() => {
+      themeDebounceRef.current = null;
+      const queue = themeQueueRef.current;
+      const last = queue.at(-1);
+      const operation = {
+        kind: "update",
+        preference,
+        revision,
+        workspaceRoot,
+      } satisfies ThemeSaveOperation;
+      if (last?.kind === "update" && last.workspaceRoot === workspaceRoot)
+        queue[queue.length - 1] = operation;
+      else queue.push(operation);
+      flushThemeQueueRef.current();
+    }, 450);
+  }, []);
+
+  const resetWorkspaceTheme = useCallback(() => {
+    const workspaceRoot = activeWorkspaceRootRef.current;
+    if (!workspaceRoot) return;
+    if (themeDebounceRef.current !== null)
+      window.clearTimeout(themeDebounceRef.current);
+    themeDebounceRef.current = null;
+    themeQueueRef.current = themeQueueRef.current.filter(
+      (operation) => operation.workspaceRoot !== workspaceRoot,
+    );
+    const revision = ++latestThemeIntentRef.current;
+    themeQueueRef.current.push({ kind: "reset", revision, workspaceRoot });
+    applyTheme(DEFAULT_THEME_PREFERENCE);
+    setSettings((current) => ({ ...current, theme: DEFAULT_THEME_PREFERENCE }));
+    setThemeEditorRevision((current) => current + 1);
+    setThemeSaveState("saving");
+    setThemeUnsaved(true);
+    flushThemeQueueRef.current();
+  }, []);
+
+  const retryThemeSave = useCallback(() => {
+    if (themeQueueRef.current.length === 0) return;
+    setThemeSaveState("saving");
+    flushThemeQueueRef.current();
+  }, []);
+
+  const flushTypographyQueue = useCallback(async () => {
+    if (typographyMutationInFlightRef.current || typographyPausedRef.current)
+      return;
+    const operation = typographyQueueRef.current;
+    if (!operation) return;
+    typographyQueueRef.current = null;
+    typographyMutationInFlightRef.current = true;
+    setTypographySaveState("saving");
+    try {
+      const updated = await api<ReviewSettings>("/api/settings/typography", {
+        method: "PUT",
+        body: JSON.stringify({
+          workspaceRoot: operation.workspaceRoot,
+          preference: operation.preference,
+        }),
+      });
+      typographyMutationInFlightRef.current = false;
+      confirmedTypographyRef.current = updated.typography;
+      if (
+        activeWorkspaceRootRef.current === operation.workspaceRoot &&
+        operation.revision === latestTypographyIntentRef.current
+      ) {
+        applyTypography(updated.typography);
+        desiredTypographyRef.current = updated.typography;
+        setSettings((current) => ({
+          ...current,
+          typography: updated.typography,
+        }));
+      }
+      if (typographyQueueRef.current) flushTypographyQueueRef.current();
+      else {
+        setTypographySaveState("saved");
+        setTypographyUnsaved(false);
+      }
+    } catch (error) {
+      typographyMutationInFlightRef.current = false;
+      const rejected = error instanceof ApiError && error.status < 500;
+      if (rejected) {
+        typographyQueueRef.current = null;
+        typographyPausedRef.current = false;
+        desiredTypographyRef.current = confirmedTypographyRef.current;
+        applyTypography(confirmedTypographyRef.current);
+        setSettings((current) => ({
+          ...current,
+          typography: confirmedTypographyRef.current,
+        }));
+        setTypographySaveState("rejected");
+        setTypographyUnsaved(false);
+        return;
+      }
+      if (operation.source === "font") {
+        typographyQueueRef.current = null;
+        typographyPausedRef.current = false;
+        desiredTypographyRef.current = confirmedTypographyRef.current;
+        applyTypography(confirmedTypographyRef.current);
+        setSettings((current) => ({
+          ...current,
+          typography: confirmedTypographyRef.current,
+        }));
+        setTypographySaveState("failed");
+        setTypographyUnsaved(false);
+        return;
+      }
+      typographyPausedRef.current = true;
+      const latest = desiredTypographyRef.current;
+      if (!typographyQueueRef.current)
+        typographyQueueRef.current = {
+          preference: latest,
+          revision: latestTypographyIntentRef.current,
+          workspaceRoot: operation.workspaceRoot,
+          source: operation.source,
+        };
+      setTypographySaveState("failed");
+      setTypographyUnsaved(true);
+    }
+  }, []);
+  flushTypographyQueueRef.current = () => void flushTypographyQueue();
+
+  const queueTypographyPreference = useCallback(
+    (
+      preference: TypographyPreference,
+      source: TypographySaveOperation["source"],
+    ) => {
+      const workspaceRoot = activeWorkspaceRootRef.current;
+      if (!workspaceRoot) return;
+      desiredTypographyRef.current = preference;
+      applyTypography(preference);
+      setSettings((current) => ({ ...current, typography: preference }));
+      const revision = ++latestTypographyIntentRef.current;
+      typographyQueueRef.current = {
+        preference,
+        revision,
+        workspaceRoot,
+        source,
+      };
+      setTypographyUnsaved(true);
+      if (!typographyPausedRef.current) {
+        setTypographySaveState("saving");
+        window.setTimeout(() => flushTypographyQueueRef.current(), 0);
+      } else setTypographySaveState("failed");
+    },
+    [],
+  );
+
+  const retryTypographySave = useCallback(() => {
+    if (!typographyQueueRef.current) {
+      typographyQueueRef.current = {
+        preference: desiredTypographyRef.current,
+        revision: latestTypographyIntentRef.current,
+        workspaceRoot: activeWorkspaceRootRef.current,
+        source: "size",
+      };
+    }
+    typographyPausedRef.current = false;
+    setTypographySaveState("saving");
+    flushTypographyQueueRef.current();
+  }, []);
+
+  useEffect(() => {
+    const protectUnsavedTheme = (event: BeforeUnloadEvent) => {
+      if (!themeUnsaved && !typographyUnsaved) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", protectUnsavedTheme);
+    return () =>
+      window.removeEventListener("beforeunload", protectUnsavedTheme);
+  }, [themeUnsaved, typographyUnsaved]);
+
+  useEffect(
+    () => () => {
+      if (themeDebounceRef.current !== null)
+        window.clearTimeout(themeDebounceRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     void loadWorkspace().then((nextWorkspace) => {
@@ -953,6 +1821,13 @@ export default function App() {
     [filePanelOpen],
   );
 
+  const closeSettings = useCallback(() => {
+    setActivePage("review");
+    window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() => settingsNavRef.current?.focus()),
+    );
+  }, []);
+
   const closeReviewPanel = useCallback((restoreFocus = true) => {
     setReviewPanelOpen(false);
     setPendingReviewFocus(null);
@@ -1025,12 +1900,13 @@ export default function App() {
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (activePage === "settings") {
-        if (target.matches('input, textarea, select, [contenteditable="true"]'))
-          return;
         if (event.key === "Escape") {
           event.preventDefault();
-          setActivePage("review");
+          closeSettings();
+          return;
         }
+        if (target.matches('input, textarea, select, [contenteditable="true"]'))
+          return;
         return;
       }
       if (event.key === "Escape") {
@@ -1237,6 +2113,7 @@ export default function App() {
   }, [
     activePage,
     closeFilePanel,
+    closeSettings,
     closeReviewPanel,
     diffSearch,
     displayedDiff,
@@ -1284,6 +2161,12 @@ export default function App() {
 
   const openWorkspace = async (event: FormEvent) => {
     event.preventDefault();
+    if (themeUnsaved || typographyUnsaved) {
+      setWorkspaceError(
+        "Wait for workspace appearance settings to finish saving, or retry the failed save before switching.",
+      );
+      return;
+    }
     workspaceOpenRef.current = true;
     workspaceRequestRef.current += 1;
     settingsRequestRef.current += 1;
@@ -1293,6 +2176,7 @@ export default function App() {
     setSelectedLines([]);
     setCommentBody("");
     setOpeningWorkspace(true);
+    setSettingsLoaded(false);
     try {
       const nextWorkspace = await api<WorkspaceResponse>(
         "/api/workspace/open",
@@ -1315,6 +2199,7 @@ export default function App() {
       setSelectedLines([]);
       await loadSettings();
     } catch (error) {
+      setSettingsLoaded(true);
       setWorkspaceError(
         error instanceof Error
           ? error.message
@@ -1367,6 +2252,39 @@ export default function App() {
     }
   };
 
+  const approveSnapshot = async () => {
+    setApproving("snapshot");
+    try {
+      const result = await api<SnapshotResponse>("/api/review/snapshot", {
+        method: "POST",
+        body: "{}",
+      });
+      setWorkspace(result.workspace);
+      setDiff((current) => {
+        const approved = result.workspace.files.find(
+          (file) =>
+            file.path === current?.path && file.reviewStatus === "approved",
+        );
+        return current && approved
+          ? {
+              ...current,
+              reviewStatus: "approved",
+              approvedAt: result.snapshot.approvedAt,
+            }
+          : current;
+      });
+      setActionError("");
+    } catch (error) {
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "The snapshot could not be approved.",
+      );
+    } finally {
+      setApproving("");
+    }
+  };
+
   const deferFile = async () => {
     if (!displayedDiff || activeFileDeferred) return;
     try {
@@ -1406,38 +2324,6 @@ export default function App() {
           ? error.message
           : "The file could not be restored.",
       );
-    }
-  };
-
-  const approveSnapshot = async () => {
-    setApproving("snapshot");
-    try {
-      const result = await api<SnapshotResponse>("/api/review/snapshot", {
-        method: "POST",
-        body: "{}",
-      });
-      setWorkspace(result.workspace);
-      const approvedActiveFile = result.workspace.files.find(
-        (file) => file.path === activePath && file.reviewStatus === "approved",
-      );
-      setDiff((current) =>
-        current && approvedActiveFile
-          ? {
-              ...current,
-              reviewStatus: "approved",
-              approvedAt: result.snapshot.approvedAt,
-            }
-          : current,
-      );
-      setActionError("");
-    } catch (error) {
-      setActionError(
-        error instanceof Error
-          ? error.message
-          : "The snapshot could not be approved.",
-      );
-    } finally {
-      setApproving("");
     }
   };
 
@@ -1625,39 +2511,6 @@ export default function App() {
     [commitCommentDeletion],
   );
 
-  const reopenComment = async (comment: ReviewComment) => {
-    try {
-      const packet = await api<{ comment: ReviewComment }>(
-        `/api/comments/${encodeURIComponent(comment.id)}/reopen`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            expectedState: comment.state,
-            expectedRootVersion: comment.rootVersion,
-            expectedThreadRevision: comment.threadRevision,
-            requestId: crypto.randomUUID(),
-          }),
-        },
-      );
-      setDiff((current) =>
-        current
-          ? {
-              ...current,
-              comments: current.comments.map((candidate) =>
-                candidate.id === comment.id ? packet.comment : candidate,
-              ),
-            }
-          : current,
-      );
-    } catch (error) {
-      setActionError(
-        error instanceof Error
-          ? error.message
-          : "The thread could not be reopened.",
-      );
-    }
-  };
-
   const undoCommentDeletion = useCallback(() => {
     const pending = pendingCommentDeletionRef.current;
     if (!pending) return;
@@ -1722,7 +2575,10 @@ export default function App() {
     }
   };
 
-  if (loadingWorkspace && !workspace && !workspaceError) {
+  if (
+    (loadingWorkspace && !workspace && !workspaceError) ||
+    (workspace && !settingsLoaded)
+  ) {
     return (
       <main className="app-shell" data-shell="review-workspace">
         <LoadingShell />
@@ -1757,12 +2613,30 @@ export default function App() {
   if (activePage === "settings") {
     return (
       <SettingsPage
-        onBack={() => setActivePage("review")}
+        includeNoise={includeNoise}
+        onBack={closeSettings}
+        onIncludeNoiseChange={(nextIncludeNoise) => {
+          setIncludeNoise(nextIncludeNoise);
+          void loadWorkspace(true, nextIncludeNoise);
+        }}
         onSaved={(updated) => {
-          setSettings(updated);
+          setSettings((current) => ({
+            ...updated,
+            theme: current.theme,
+            typography: current.typography,
+          }));
           setContextLines(updated.diffContextLines);
         }}
+        onThemeChange={queueThemePreference}
+        onThemeReset={resetWorkspaceTheme}
+        onThemeRetry={retryThemeSave}
+        onTypographyChange={queueTypographyPreference}
+        onTypographyRetry={retryTypographySave}
         settings={settings}
+        themeEditorRevision={themeEditorRevision}
+        themeSaveState={themeSaveState}
+        typographySaveState={typographySaveState}
+        typographyUnsaved={typographyUnsaved}
         workspace={workspace}
       />
     );
@@ -1795,7 +2669,7 @@ export default function App() {
             <div className="workspace-title-row">
               <div>
                 <p className="rail-label">Workspace</p>
-                <h1>{workspace.name}</h1>
+                <h1 title={workspace.name}>{workspace.name}</h1>
               </div>
               <div className="workspace-title-actions">
                 <button
@@ -1897,6 +2771,7 @@ export default function App() {
               visibleFiles.map((file) => (
                 <div className="file-list-item" key={file.path} role="listitem">
                   <button
+                    aria-label={`${file.path}, ${statusLabel(file)}, ${changeLabel(file)}${file.commentCount > 0 ? `, ${file.commentCount} ${file.commentCount === 1 ? "comment" : "comments"}` : ""}`}
                     aria-current={activePath === file.path ? "true" : undefined}
                     className="file-row"
                     data-active={activePath === file.path}
@@ -1935,6 +2810,9 @@ export default function App() {
                           {file.commentCount}
                         </span>
                       ) : null}
+                    </span>
+                    <span aria-hidden="true" className="file-focus-path">
+                      {file.path}
                     </span>
                     <span className="visually-hidden">
                       {statusLabel(file)}, {changeLabel(file)}
@@ -2048,28 +2926,13 @@ export default function App() {
           ) : null}
 
           <div className="rail-footer">
-            <label className="noise-toggle">
-              <input
-                checked={includeNoise}
-                onChange={(event) => setIncludeNoise(event.target.checked)}
-                type="checkbox"
-              />
-              <span className="toggle-track">
-                <span />
-              </span>
-              <span>
-                Show review noise
-                <small>
-                  {workspace.hiddenNoiseCount} generated or binary hidden
-                </small>
-              </span>
-            </label>
             <button
               className="settings-nav-button"
               onClick={() => {
                 setReviewPanelOpen(false);
                 setActivePage("settings");
               }}
+              ref={settingsNavRef}
               type="button"
             >
               <SettingsIcon />
@@ -2079,69 +2942,71 @@ export default function App() {
                 {settings.diffContextLines} lines
               </small>
             </button>
-            <div className="workspace-watch-state" data-state={watchState}>
-              <span aria-hidden="true" />
-              {refreshing
-                ? "Refreshing changes"
-                : watchState === "live"
-                  ? "Watching files"
-                  : watchState === "polling"
-                    ? "Polling for changes"
-                    : "Connecting watcher"}
-            </div>
-            <details className="shortcut-guide">
-              <summary>Keyboard shortcuts</summary>
-              <div aria-label="Keyboard shortcuts">
-                {settings.keyboardLayout === "vim" ? (
-                  <>
-                    <span>
-                      <kbd>Enter</kbd> Navigate the diff
-                    </span>
-                    <span>
-                      <kbd>J</kbd>
-                      <kbd>K</kbd> Move files or diff lines
-                    </span>
-                    <span>
-                      <kbd>V</kbd> Select lines in diff mode
-                    </span>
-                    <span>
-                      <kbd>Ctrl+D</kbd>
-                      <kbd>Ctrl+U</kbd> Half-page
-                    </span>
-                    <span>
-                      <kbd>gg</kbd>
-                      <kbd>G</kbd> First or last line
-                    </span>
-                    <span>
-                      <kbd>C</kbd> Comment on selected lines
-                    </span>
-                    <span>
-                      <kbd>A</kbd> Approve in diff mode
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span>
-                      <kbd>J</kbd>
-                      <kbd>K</kbd> Next or previous file
-                    </span>
-                    <span>
-                      <kbd>C</kbd> Comment on selected lines
-                    </span>
-                  </>
-                )}
-                <span>
-                  <kbd>/</kbd> Search this diff
-                </span>
-                <span>
-                  <kbd>G</kbd> Go to a visible line
-                </span>
-                <span>
-                  <kbd>[</kbd>
-                  <kbd>]</kbd> Toggle side panels
-                </span>
+            <div className="rail-utilities">
+              <div className="workspace-watch-state" data-state={watchState}>
+                <span aria-hidden="true" />
+                {refreshing
+                  ? "Refreshing changes"
+                  : watchState === "live"
+                    ? "Watching files"
+                    : watchState === "polling"
+                      ? "Polling for changes"
+                      : "Connecting watcher"}
               </div>
-            </details>
+              <details className="shortcut-guide">
+                <summary>Shortcuts</summary>
+                <div aria-label="Keyboard shortcuts">
+                  {settings.keyboardLayout === "vim" ? (
+                    <>
+                      <span>
+                        <kbd>Enter</kbd> Navigate the diff
+                      </span>
+                      <span>
+                        <kbd>J</kbd>
+                        <kbd>K</kbd> Move files or diff lines
+                      </span>
+                      <span>
+                        <kbd>V</kbd> Select lines in diff mode
+                      </span>
+                      <span>
+                        <kbd>Ctrl+D</kbd>
+                        <kbd>Ctrl+U</kbd> Half-page
+                      </span>
+                      <span>
+                        <kbd>gg</kbd>
+                        <kbd>G</kbd> First or last line
+                      </span>
+                      <span>
+                        <kbd>C</kbd> Comment on selected lines
+                      </span>
+                      <span>
+                        <kbd>A</kbd> Approve in diff mode
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span>
+                        <kbd>J</kbd>
+                        <kbd>K</kbd> Next or previous file
+                      </span>
+                      <span>
+                        <kbd>C</kbd> Comment on selected lines
+                      </span>
+                    </>
+                  )}
+                  <span>
+                    <kbd>/</kbd> Search this diff
+                  </span>
+                  <span>
+                    <kbd>G</kbd> Go to a visible line
+                  </span>
+                  <span>
+                    <kbd>[</kbd>
+                    <kbd>]</kbd> Toggle side panels
+                  </span>
+                </div>
+              </details>
+            </div>
           </div>
         </aside>
 
@@ -2818,7 +3683,6 @@ export default function App() {
                 <article
                   className="review-comment"
                   data-outdated={comment.outdated}
-                  data-thread-state={comment.state}
                   key={comment.id}
                 >
                   <header>
@@ -2827,52 +3691,25 @@ export default function App() {
                         ? `Was ${commentLineLabel(comment)}`
                         : commentLineLabel(comment)}
                     </span>
-                    <em>{comment.state}</em>
                     {comment.outdated ? (
                       <em>Stale anchor</em>
                     ) : (
                       <time>{formatRelativeTime(comment.createdAt)}</time>
                     )}
                   </header>
-                  <p>
-                    {comment.deleted ? "Original note deleted." : comment.body}
-                  </p>
-                  {comment.replies.length > 0 ? (
-                    <ol className="thread-replies">
-                      {comment.replies.map((reply) => (
-                        <li key={reply.id}>
-                          <header>
-                            <strong>{reply.actor}</strong>
-                            {reply.decision ? <em>{reply.decision}</em> : null}
-                            <time>{formatRelativeTime(reply.createdAt)}</time>
-                          </header>
-                          <p>{reply.body}</p>
-                        </li>
-                      ))}
-                    </ol>
-                  ) : null}
+                  <p>{comment.body}</p>
                   {comment.outdated ? (
                     <p className="stale-comment-note">
                       The file changed after this note. It stays on the reviewed
                       version and is not attached to the current line.
                     </p>
                   ) : null}
-                  {!comment.deleted ? (
-                    <button
-                      onClick={() => scheduleCommentDeletion(comment)}
-                      type="button"
-                    >
-                      Delete note
-                    </button>
-                  ) : null}
-                  {comment.state !== "pending" ? (
-                    <button
-                      onClick={() => void reopenComment(comment)}
-                      type="button"
-                    >
-                      Reopen thread
-                    </button>
-                  ) : null}
+                  <button
+                    onClick={() => scheduleCommentDeletion(comment)}
+                    type="button"
+                  >
+                    Delete note
+                  </button>
                 </article>
               )) ?? null}
               {displayedDiff &&

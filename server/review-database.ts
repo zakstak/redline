@@ -7,6 +7,16 @@ import type {
   ReviewSettings,
   ReviewThreadState,
 } from "../shared/review-contract.js";
+import {
+  DEFAULT_THEME_PREFERENCE,
+  parseThemePreference,
+  type ThemePreference,
+} from "../shared/theme.js";
+import {
+  DEFAULT_TYPOGRAPHY_PREFERENCE,
+  parseTypographyPreference,
+  type TypographyPreference,
+} from "../shared/typography.js";
 
 type StoredComment = Omit<ReviewComment, "outdated">;
 
@@ -92,8 +102,15 @@ export class ReviewDatabase {
         user_version: number;
       }
     ).user_version;
-    if (schemaVersion > 0 && schemaVersion < 2) {
-      this.database.exec("DROP TABLE IF EXISTS review_comments;");
+    if (schemaVersion === 1) {
+      this.database.exec(`
+        BEGIN IMMEDIATE;
+        ALTER TABLE review_comments ADD COLUMN state TEXT NOT NULL DEFAULT 'pending';
+        ALTER TABLE review_comments ADD COLUMN root_version INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE review_comments ADD COLUMN thread_revision INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE review_comments ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
+        COMMIT;
+      `);
     }
     this.database.exec(`
       PRAGMA journal_mode = WAL;
@@ -230,7 +247,10 @@ export class ReviewDatabase {
     const result = hasReplies
       ? this.database
           .prepare(
-            "UPDATE review_comments SET deleted = 1, root_version = root_version + 1 WHERE id = ?",
+            `UPDATE review_comments
+             SET deleted = 1, body = '[deleted]', state = 'deferred',
+                 root_version = root_version + 1
+             WHERE id = ?`,
           )
           .run(id)
       : this.database
@@ -265,6 +285,24 @@ export class ReviewDatabase {
       )
       .get(id) as CommentRow | undefined;
     return row ? commentFromRow(row, this.repliesForComment(id)) : null;
+  }
+
+  priorResponse(
+    scope: string,
+    requestId: string,
+    requestHash: string,
+  ): StoredComment | null {
+    const prior = this.database
+      .prepare(
+        "SELECT request_hash, response_json FROM review_requests WHERE scope = ? AND request_id = ?",
+      )
+      .get(scope, requestId) as
+      | { request_hash: string; response_json: string }
+      | undefined;
+    if (!prior) return null;
+    if (prior.request_hash !== requestHash)
+      throw new Error("idempotency_conflict");
+    return JSON.parse(prior.response_json) as StoredComment;
   }
 
   mutateThread(input: {
@@ -367,7 +405,33 @@ export class ReviewDatabase {
         "SELECT value FROM review_settings WHERE key = 'keyboard_layout'",
       )
       .get() as { value?: string } | undefined;
+    const themeRow = this.database
+      .prepare(
+        "SELECT value FROM review_settings WHERE key = 'theme_preference'",
+      )
+      .get() as { value?: string } | undefined;
+    const typographyRow = this.database
+      .prepare(
+        "SELECT value FROM review_settings WHERE key = 'typography_preference'",
+      )
+      .get() as { value?: string } | undefined;
     const parsed = Number(contextRow?.value ?? DEFAULT_CONTEXT_LINES);
+    let theme = DEFAULT_THEME_PREFERENCE;
+    try {
+      theme =
+        parseThemePreference(JSON.parse(themeRow?.value ?? "null")) ??
+        DEFAULT_THEME_PREFERENCE;
+    } catch {
+      theme = DEFAULT_THEME_PREFERENCE;
+    }
+    let typography = DEFAULT_TYPOGRAPHY_PREFERENCE;
+    try {
+      typography =
+        parseTypographyPreference(JSON.parse(typographyRow?.value ?? "null")) ??
+        DEFAULT_TYPOGRAPHY_PREFERENCE;
+    } catch {
+      typography = DEFAULT_TYPOGRAPHY_PREFERENCE;
+    }
     return {
       version: 1,
       diffContextLines:
@@ -376,6 +440,8 @@ export class ReviewDatabase {
           : DEFAULT_CONTEXT_LINES,
       keyboardLayout:
         keyboardRow?.value === "vim" ? "vim" : DEFAULT_KEYBOARD_LAYOUT,
+      theme,
+      typography,
     };
   }
 
@@ -397,6 +463,33 @@ export class ReviewDatabase {
       this.database.exec("ROLLBACK");
       throw error;
     }
+    return this.getSettings();
+  }
+
+  updateThemePreference(theme: ThemePreference): ReviewSettings {
+    this.database
+      .prepare(
+        `INSERT INTO review_settings (key, value) VALUES ('theme_preference', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(JSON.stringify(theme));
+    return this.getSettings();
+  }
+
+  deleteThemePreference(): ReviewSettings {
+    this.database
+      .prepare("DELETE FROM review_settings WHERE key = 'theme_preference'")
+      .run();
+    return this.getSettings();
+  }
+
+  updateTypographyPreference(typography: TypographyPreference): ReviewSettings {
+    this.database
+      .prepare(
+        `INSERT INTO review_settings (key, value) VALUES ('typography_preference', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(JSON.stringify(typography));
     return this.getSettings();
   }
 }

@@ -132,6 +132,7 @@ function validatePersistedStore(
         "each snapshot must contain id, approvedAt, head, and string fingerprints",
       );
   }
+  if (store.deferredPaths === undefined) store.deferredPaths = [];
   if (
     !Array.isArray(store.deferredPaths) ||
     store.deferredPaths.some((path) => typeof path !== "string")
@@ -534,19 +535,30 @@ export class ReviewWorkspace {
   }
 
   async initialize() {
-    await this.openWorkspace(this.root);
+    await this.activateWorkspace(this.root);
   }
 
   async openWorkspace(requestedPath: string) {
+    await this.activateWorkspace(requestedPath);
+    return this.getWorkspace();
+  }
+
+  private async activateWorkspace(requestedPath: string) {
     const candidate = isAbsolute(requestedPath)
       ? requestedPath
       : resolve(this.root, requestedPath);
-    const root = (
-      await git(candidate, ["rev-parse", "--show-toplevel"])
-    ).trim();
-    const gitDir = (
-      await git(root, ["rev-parse", "--absolute-git-dir"])
-    ).trim();
+    let root: string;
+    let gitDir: string;
+    try {
+      root = (await git(candidate, ["rev-parse", "--show-toplevel"])).trim();
+      gitDir = (await git(root, ["rev-parse", "--absolute-git-dir"])).trim();
+    } catch (error) {
+      throw new Error(
+        `Redline could not open the selected workspace "${resolve(candidate)}". ` +
+          "Launch Redline from a Git worktree or set REDLINE_WORKSPACE to a valid Git workspace.",
+        { cause: error },
+      );
+    }
     const operation = this.enqueueExclusive(async () => {
       const targetStorePath = this.storePath(gitDir);
       const targetDatabasePath = this.databasePath(gitDir);
@@ -580,7 +592,6 @@ export class ReviewWorkspace {
       if (this.workspaceSwitchPromise === switchPromise)
         this.workspaceSwitchPromise = null;
     }
-    return this.getWorkspace();
   }
 
   close() {
@@ -590,6 +601,15 @@ export class ReviewWorkspace {
   }
 
   getRoot() {
+    return this.root;
+  }
+
+  async getCanonicalRoot() {
+    if (!this.gitDir) {
+      this.root = (
+        await git(this.root, ["rev-parse", "--show-toplevel"])
+      ).trim();
+    }
     return this.root;
   }
 
@@ -1139,7 +1159,7 @@ export class ReviewWorkspace {
       deferred.has(file.path),
     );
     const latestStoredSnapshot = store.snapshots.at(-1);
-    const comments = visibleFiles.reduce(
+    const comments = reviewableFiles.reduce(
       (total, file) => total + file.commentCount,
       0,
     );
@@ -1522,10 +1542,10 @@ export class ReviewWorkspace {
     });
   }
 
-  async getThreadPacket(id: string): Promise<ReviewThreadPacket> {
+  private async packetForComment(
+    comment: Omit<ReviewComment, "outdated">,
+  ): Promise<ReviewThreadPacket> {
     return this.readStable(async () => {
-      const comment = this.reviewDatabase().commentById(id);
-      if (!comment) throw new Error("not_found");
       const workspace = await this.getWorkspaceOnce(true);
       const current = [...workspace.files, ...workspace.deferredFiles].find(
         (file) => file.path === comment.path,
@@ -1550,10 +1570,16 @@ export class ReviewWorkspace {
     });
   }
 
+  async getThreadPacket(id: string): Promise<ReviewThreadPacket> {
+    const comment = this.reviewDatabase().commentById(id);
+    if (!comment) throw new Error("not_found");
+    return this.packetForComment(comment);
+  }
+
   async getPendingThreadPackets(): Promise<ReviewThreadPacket[]> {
     const pending = this.reviewDatabase()
       .allComments()
-      .filter((comment) => comment.state === "pending");
+      .filter((comment) => comment.state === "pending" && !comment.deleted);
     return Promise.all(
       pending.map((comment) => this.getThreadPacket(comment.id)),
     );
@@ -1603,6 +1629,30 @@ export class ReviewWorkspace {
     return this.enqueueExclusive(async () => {
       if (generation !== this.workspaceGeneration)
         throw new Error("workspace_mismatch");
+      const body = input.body?.trim();
+      if (!input.decision && !input.reopen && !body) {
+        throw new Error("A reply requires a non-empty body.");
+      }
+      if (input.decision && !body) {
+        throw new Error("An agent decision requires a complete reply body.");
+      }
+      if (body && body.length > 4000)
+        throw new Error("Replies must be 4,000 characters or fewer.");
+      const semantic = {
+        ...input,
+        body: body ?? null,
+        acceptedContext: input.acceptedContext ?? null,
+      };
+      const requestHash = createHash("sha256")
+        .update(JSON.stringify(semantic))
+        .digest("hex");
+      const scope = `${this.root}:${input.reopen ? "reopen" : input.decision ? "decision" : "reply"}`;
+      const prior = this.reviewDatabase().priorResponse(
+        scope,
+        input.requestId,
+        requestHash,
+      );
+      if (prior) return this.packetForComment(prior);
       const current = await this.getThreadPacket(input.commentId);
       if (
         input.acceptedContext &&
@@ -1625,10 +1675,6 @@ export class ReviewWorkspace {
         )
           throw new Error("stale_context");
       }
-      const body = input.body?.trim();
-      if (input.decision && !body) {
-        throw new Error("An agent decision requires a complete reply body.");
-      }
       if (
         (input.decision === "rejected" || input.decision === "deferred") &&
         !body
@@ -1638,16 +1684,6 @@ export class ReviewWorkspace {
       if (input.decision === "accepted" && !input.acceptedContext) {
         throw new Error("Acceptance requires the observed accepted context.");
       }
-      if (body && body.length > 4000)
-        throw new Error("Replies must be 4,000 characters or fewer.");
-      const semantic = {
-        ...input,
-        body: body ?? null,
-        acceptedContext: input.acceptedContext ?? null,
-      };
-      const requestHash = createHash("sha256")
-        .update(JSON.stringify(semantic))
-        .digest("hex");
       const nextState: ReviewThreadState = input.reopen
         ? "pending"
         : (input.decision ?? input.expectedState);
@@ -1662,14 +1698,14 @@ export class ReviewWorkspace {
         fingerprint: current.comment.fingerprint,
         rootVersion: current.comment.rootVersion,
       };
-      this.reviewDatabase().mutateThread({
+      const persisted = this.reviewDatabase().mutateThread({
         commentId: input.commentId,
         expectedState: input.expectedState,
         expectedRootVersion: input.expectedRootVersion,
         expectedThreadRevision: input.expectedThreadRevision,
         requestId: input.requestId,
         requestHash,
-        scope: `${this.root}:${input.reopen ? "reopen" : input.decision ? "decision" : "reply"}`,
+        scope,
         ...(body
           ? {
               reply: {
@@ -1685,7 +1721,7 @@ export class ReviewWorkspace {
           : {}),
         nextState,
       });
-      return this.getThreadPacket(input.commentId);
+      return this.packetForComment(persisted);
     });
   }
 

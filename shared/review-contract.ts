@@ -103,6 +103,10 @@ export interface ReviewSettings {
   diffContextLines: number;
   /** Keyboard interaction vocabulary used by the review surface. */
   keyboardLayout: "normie" | "vim";
+  /** Validated workspace-local visual theme preference. */
+  theme: ThemePreference;
+  /** Validated, atomically persisted workspace-local typography preference. */
+  typography: TypographyPreference;
 }
 
 export interface ChangedFile {
@@ -191,3 +195,5 @@ export interface FilesApprovalResponse {
   approvedAt: string;
   approvals: FileApprovalResult[];
 }
+import type { ThemePreference } from "./theme.js";
+import type { TypographyPreference } from "./typography.js";

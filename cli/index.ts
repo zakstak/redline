@@ -309,17 +309,28 @@ async function serverRequest(
     );
   }
   if (!response.ok) {
+    const stableCode =
+      typeof payload === "object" && payload !== null && "code" in payload
+        ? String(payload.code)
+        : "";
     const workspaceMismatch =
       typeof payload === "object" &&
       payload !== null &&
       "code" in payload &&
       payload.code === "workspace_mismatch";
+    const domainConflict =
+      !workspaceMismatch &&
+      (response.status === 409 ||
+        stableCode === "not_found" ||
+        stableCode === "invalid_input" ||
+        stableCode === "invalid_state" ||
+        response.status === 400);
     throw new CliError(
-      response.status === 409 && !workspaceMismatch ? 5 : 4,
+      domainConflict ? 5 : 4,
       typeof payload === "object" && payload && "message" in payload
         ? String(payload.message)
         : `Server failed with ${response.status}.`,
-      "server",
+      domainConflict ? "conflict" : "server",
     );
   }
   return payload;
