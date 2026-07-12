@@ -1399,11 +1399,20 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post("/api/github/refresh", async (request, reply) => {
     const controller = new AbortController();
-    request.raw.once("aborted", () => controller.abort());
+    let completed = false;
+    const abort = () => {
+      if (!completed) controller.abort();
+    };
+    request.raw.once("aborted", abort);
+    reply.raw.once("close", abort);
     try {
       return await workspace.refreshGitHubComments(controller.signal);
     } catch (error) {
       return sendError(reply, error, 409);
+    } finally {
+      completed = true;
+      request.raw.removeListener("aborted", abort);
+      reply.raw.removeListener("close", abort);
     }
   });
 

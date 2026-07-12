@@ -304,6 +304,7 @@ export function sanitizeGitHubMarkdown(value: string) {
       }
       return line
         .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+        .replace(/!\[([^\]]*)\]\s*\[[^\]]*\]/g, "$1")
         .replace(
           /<(?!https?:\/\/|mailto:|[^ <>@]+@[^ <>@]+\.[^ <>@]+>)[^>]*>/g,
           "",
@@ -361,6 +362,20 @@ export function mapGitHubAnchor(
   displayed: string,
   diff: DiffResponse,
 ): { anchor: ReviewAnchor | null; reason?: string } {
+  const fullyPresent = (anchor: ReviewAnchor) =>
+    Array.from(
+      { length: anchor.endLine - anchor.startLine + 1 },
+      (_, index) => anchor.startLine + index,
+    ).every((lineNumber) =>
+      diff.lines.some((line) =>
+        line.anchors.some(
+          (lineAnchor) =>
+            lineAnchor.side === anchor.side &&
+            lineAnchor.startLine <= lineNumber &&
+            lineAnchor.endLine >= lineNumber,
+        ),
+      ),
+    );
   const sourceText = normalizeLines(source);
   const displayedText = normalizeLines(displayed);
   const start = coordinate.startLine - 1;
@@ -377,15 +392,9 @@ export function mapGitHubAnchor(
       startLine: coordinate.startLine,
       endLine: coordinate.endLine,
     } satisfies ReviewAnchor;
-    const exists = diff.lines.some((line) =>
-      line.anchors.some(
-        (lineAnchor) =>
-          lineAnchor.side === anchor.side &&
-          lineAnchor.startLine >= anchor.startLine &&
-          lineAnchor.endLine <= anchor.endLine,
-      ),
-    );
-    return exists ? { anchor } : { anchor: null, reason: "not_in_diff" };
+    return fullyPresent(anchor)
+      ? { anchor }
+      : { anchor: null, reason: "not_in_diff" };
   }
   const range = sourceText.lines.slice(start, end);
   const hasBefore = start > 0;
@@ -441,15 +450,9 @@ export function mapGitHubAnchor(
     startLine: mappedStart,
     endLine: mappedStart + range.length - 1,
   } satisfies ReviewAnchor;
-  const exists = diff.lines.some((line) =>
-    line.anchors.some(
-      (anchor) =>
-        anchor.side === mapped.side &&
-        anchor.startLine >= mapped.startLine &&
-        anchor.endLine <= mapped.endLine,
-    ),
-  );
-  return exists ? { anchor: mapped } : { anchor: null, reason: "not_in_diff" };
+  return fullyPresent(mapped)
+    ? { anchor: mapped }
+    : { anchor: null, reason: "not_in_diff" };
 }
 
 function canonicalJson(value: unknown): string {
@@ -1683,6 +1686,7 @@ export class GitHubImportManager {
     };
     try {
       if (signal?.aborted) throw new Error("cancelled");
+      const provenGitState = await this.gitState();
       const identity = await this.discoverIdentity();
       if (!identity) throw new Error("no_pull_request");
       const proofTime = new Date().toISOString();
@@ -1713,6 +1717,13 @@ export class GitHubImportManager {
         threads,
         sourceIds: Object.keys(sources).sort(),
       };
+      if ((await this.gitState()) !== provenGitState) {
+        this.activeIdentity = null;
+        this.activationTime = null;
+        this.readIdentityVerified = false;
+        this.verifiedGitState = null;
+        throw new Error("git_identity_changed");
+      }
       await this.mutateStore((current) =>
         this.admitSnapshot(current, snapshot, sources),
       );

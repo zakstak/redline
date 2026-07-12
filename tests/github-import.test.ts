@@ -103,6 +103,14 @@ describe("GitHub import primitives", () => {
   it("maps exact content and one unique context match but rejects ambiguity", () => {
     expect(
       mapGitHubAnchor(
+        { side: "new", startLine: 1, endLine: 3 },
+        "before\nupdated\nafter\n",
+        "before\nupdated\nafter\n",
+        { ...diff, lines: [diff.lines[0]] },
+      ).reason,
+    ).toBe("not_in_diff");
+    expect(
+      mapGitHubAnchor(
         { side: "new", startLine: 2, endLine: 2 },
         "before\r\nupdated\r\nafter\r\n",
         "before\nupdated\nafter\n",
@@ -205,7 +213,7 @@ describe("GitHub import primitives", () => {
     expect(
       sanitizeGitHubMarkdown(
         [
-          "[safe-looking][unsafe] ![pixel][image] [ok][safe]",
+          "[safe-looking][unsafe] ![pixel][image] [ok][safe] ![safe pixel][safe]",
           "[unsafe]: javascript:alert(1)",
           "[image]: data:image/svg+xml,evil",
           '[safe]: https://example.com/path "title"',
@@ -213,7 +221,7 @@ describe("GitHub import primitives", () => {
       ),
     ).toBe(
       [
-        "[safe-looking][unsafe] ![pixel][image] [ok][safe]",
+        "[safe-looking][unsafe] pixel [ok][safe] safe pixel",
         "",
         "",
         '[safe]: https://example.com/path "title"',
@@ -228,11 +236,13 @@ describe("GitHub import synchronization", () => {
     let graphQLError = false;
     let failDiscovery = false;
     let abortOnSource: AbortController | null = null;
+    let changeIdentityOnSource = false;
     let threadCalls = 0;
     const ghCalls: string[][] = [];
     const gitCalls: string[] = [];
     let remoteUrl = "https://github.com/base/project.git";
     const headSha = "a".repeat(40);
+    let gitStateHead = headSha;
     const baseSha = "b".repeat(40);
     const executor: CommandExecutor = async (command, args) => {
       await Promise.resolve();
@@ -266,9 +276,14 @@ describe("GitHub import synchronization", () => {
           return { stdout: "feature\n", stderr: "", code: 0 };
         if (joined === "rev-parse HEAD")
           return { stdout: `${headSha}\n`, stderr: "", code: 0 };
+        if (joined === "rev-parse --verify HEAD")
+          return { stdout: `${gitStateHead}\n`, stderr: "", code: 0 };
         if (joined.startsWith("merge-base --is-ancestor"))
           return { stdout: "", stderr: "", code: 0 };
-        if (joined === `show ${headSha}:src/example.ts`) abortOnSource?.abort();
+        if (joined === `show ${headSha}:src/example.ts`) {
+          abortOnSource?.abort();
+          if (changeIdentityOnSource) gitStateHead = "e".repeat(40);
+        }
         if (joined === `show ${headSha}:src/example.ts`)
           return { stdout: "before\nupdated\nafter\n", stderr: "", code: 0 };
         if (joined === `show ${baseSha}:src/deleted.ts`)
@@ -571,6 +586,14 @@ describe("GitHub import synchronization", () => {
       Object.keys(storedShape.sources).sort(),
     );
     expect(storedShape.snapshots[0]).not.toHaveProperty("sources");
+    changeIdentityOnSource = true;
+    expect(await importer.refresh()).toMatchObject({
+      state: "failed",
+      retained: true,
+    });
+    expect(await readFile(storePath, "utf8")).toBe(storedBefore);
+    changeIdentityOnSource = false;
+    gitStateHead = headSha;
     graphQLError = true;
     expect(await importer.refresh()).toMatchObject({
       state: "failed",
