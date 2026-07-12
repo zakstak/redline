@@ -589,6 +589,10 @@ export class ReviewWorkspace {
     this.database = null;
   }
 
+  getRoot() {
+    return this.root;
+  }
+
   subscribeToChanges(listener: (event: WorkspaceChangeEvent) => void) {
     this.watchListeners.add(listener);
     return () => {

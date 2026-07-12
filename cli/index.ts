@@ -357,7 +357,7 @@ async function executeServer(
       method: "POST",
       body: JSON.stringify(await approvalInput(parsed.input)),
     });
-  if (group === "approve" && action === "workspace")
+  if (group === "approve" && action === "workspace" && !subject)
     return serverRequest(origin, discovery, "/api/cli/approve/workspace", {
       method: "POST",
       body: "{}",
@@ -460,7 +460,7 @@ async function executeDirect(parsed: Parsed, root: string) {
       const body = await approvalInput(parsed.input);
       return await workspace.approveFiles(body.files);
     }
-    if (group === "approve" && action === "workspace")
+    if (group === "approve" && action === "workspace" && !subject)
       return await workspace.approveSnapshot();
     throw new CliError(2, "Unknown or incomplete command.", "invocation");
   } finally {
@@ -529,7 +529,7 @@ export async function run(args = process.argv.slice(2)) {
     const message =
       error instanceof Error ? error.message : "Unexpected failure.";
     const domainConflict =
-      /changed|stale|deferred|invalid_(?:input|state)|idempotency_conflict|not_found/i.test(
+      /changed|stale|deferred|invalid_(?:input|state)|idempotency_conflict|not_found|no reviewable changes/i.test(
         message,
       );
     const failure =

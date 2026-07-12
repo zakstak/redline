@@ -669,7 +669,11 @@ export default function App() {
         setPathInput(nextWorkspace.root);
         setWorkspaceError("");
         setActivePath((current) => {
-          if (nextWorkspace.files.some((file) => file.path === current))
+          if (
+            [...nextWorkspace.files, ...nextWorkspace.deferredFiles].some(
+              (file) => file.path === current,
+            )
+          )
             return current;
           return (
             nextWorkspace.files.find((file) => file.reviewStatus !== "approved")
@@ -1413,8 +1417,11 @@ export default function App() {
         body: "{}",
       });
       setWorkspace(result.workspace);
+      const approvedActiveFile = result.workspace.files.find(
+        (file) => file.path === activePath && file.reviewStatus === "approved",
+      );
       setDiff((current) =>
-        current
+        current && approvedActiveFile
           ? {
               ...current,
               reviewStatus: "approved",
@@ -2580,6 +2587,16 @@ export default function App() {
                 </div>
               ) : null}
             </>
+          ) : workspace.files.length === 0 &&
+            workspace.deferredFiles.length > 0 ? (
+            <div className="clean-workspace-state">
+              <p className="eyebrow">Deferred queue</p>
+              <h2>All changed files are deferred.</h2>
+              <p>
+                Choose a deferred file from the sidebar to inspect or restore
+                it.
+              </p>
+            </div>
           ) : workspace.files.length === 0 ? (
             <div className="clean-workspace-state">
               <span className="clean-mark">

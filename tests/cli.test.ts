@@ -252,6 +252,69 @@ describe("redline CLI", () => {
     }
   });
 
+  it("rejects extra workspace approval operands in direct and server modes", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        Response.json({ workspaceRoot: repository, serverToken: "token" }),
+      );
+
+    expect(
+      await run([
+        "--mode",
+        "direct",
+        "--workspace",
+        repository,
+        "approve",
+        "workspace",
+        "unexpected",
+      ]),
+    ).toBe(2);
+    expect(
+      await run([
+        "--mode",
+        "server",
+        "--workspace",
+        repository,
+        "approve",
+        "workspace",
+        "unexpected",
+      ]),
+    ).toBe(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies direct workspace validation failures as domain conflicts", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((value) => {
+      stderr.push(String(value));
+      return true;
+    });
+    await execute("git", ["checkout", "--", "example.ts"], {
+      cwd: repository,
+    });
+
+    expect(
+      await run([
+        "--mode",
+        "direct",
+        "--workspace",
+        repository,
+        "approve",
+        "workspace",
+      ]),
+    ).toBe(5);
+    expect(JSON.parse(stderr.join(""))).toMatchObject({
+      error: {
+        code: "conflict",
+        message: "There are no reviewable changes to approve.",
+      },
+    });
+  });
+
   it("binds reads and mutations to the discovered server process and workspace", async () => {
     const first = buildServer({ workspaceDir: repository });
     const secondRepository = await mkdtemp(
@@ -299,6 +362,23 @@ describe("redline CLI", () => {
       await first.close();
       await second.close();
       await rm(secondRepository, { recursive: true, force: true });
+    }
+  });
+
+  it("serves CLI discovery without scanning the workspace", async () => {
+    const app = buildServer({ workspaceDir: repository });
+    try {
+      await app.ready();
+      const scan = vi.spyOn(ReviewWorkspace.prototype, "getWorkspace");
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/cli/discovery",
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ workspaceRoot: repository });
+      expect(scan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
     }
   });
 

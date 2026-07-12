@@ -1223,10 +1223,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.get("/api/cli/discovery", async (_request, reply) => {
     try {
-      const current = await workspace.getWorkspace(true);
       return {
         version: 1,
-        workspaceRoot: current.root,
+        workspaceRoot: workspace.getRoot(),
         serverToken: cliServerToken,
       };
     } catch (error) {
