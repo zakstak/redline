@@ -39,6 +39,7 @@ const changedWorkspace: WorkspaceResponse = {
       commentCount: 0,
     },
   ],
+  deferredFiles: [],
   hiddenNoiseCount: 3,
   counts: { total: 2, needsReview: 2, approved: 0, changed: 1, comments: 0 },
   latestSnapshot: {
@@ -518,6 +519,10 @@ test("undoes comment deletion before the server mutation is sent", async ({
     createdAt: "2026-07-09T13:30:00.000Z",
     fingerprint: "app-v2",
     outdated: false,
+    state: "pending" as const,
+    rootVersion: 1,
+    threadRevision: 1,
+    replies: [],
   };
   await mockReviewApi(page, { ...diff, comments: [comment] });
   await page.route("**/api/comments/*", (route) => {
@@ -537,6 +542,104 @@ test("undoes comment deletion before the server mutation is sent", async ({
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(page.getByText(comment.body)).toBeVisible();
   expect(deleteRequests).toBe(0);
+});
+
+test("renders persisted thread decisions and reply history", async ({
+  page,
+}) => {
+  const reviewed = {
+    ...diff,
+    comments: [
+      {
+        id: "55555555-5555-4555-8555-555555555555",
+        path: "src/App.tsx",
+        anchors: [{ side: "new" as const, startLine: 1, endLine: 1 }],
+        body: "Confirm the automation behavior.",
+        createdAt: "2026-07-12T13:00:00.000Z",
+        fingerprint: "app-v2",
+        outdated: false,
+        state: "accepted" as const,
+        rootVersion: 1,
+        threadRevision: 1,
+        replies: [
+          {
+            id: "reply-1",
+            actor: "agent" as const,
+            body: "Implemented with regression coverage.",
+            createdAt: "2026-07-12T13:05:00.000Z",
+            decision: "accepted" as const,
+          },
+        ],
+      },
+    ],
+  };
+  await mockReviewApi(page, reviewed);
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Snapshot 2$/ }).click();
+  await expect(page.getByLabel("Thread state: accepted")).toContainText(
+    "Thread accepted",
+  );
+  const history = page.getByRole("list", { name: "Thread replies" });
+  await expect(history).toContainText("Agent");
+  await expect(history).toContainText("accepted");
+  await expect(history).toContainText("Implemented with regression coverage.");
+});
+
+test("reloads a replied thread as a tombstone after deletion", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let deleted = false;
+  const comment = {
+    id: "66666666-6666-4666-8666-666666666666",
+    path: "src/App.tsx",
+    anchors: [{ side: "new" as const, startLine: 1, endLine: 1 }],
+    body: "Original replied note",
+    createdAt: "2026-07-12T13:00:00.000Z",
+    fingerprint: "app-v2",
+    outdated: false,
+    state: "accepted" as const,
+    rootVersion: 1,
+    threadRevision: 1,
+    replies: [
+      {
+        id: "reply-delete",
+        actor: "agent" as const,
+        body: "Reply history remains visible.",
+        createdAt: "2026-07-12T13:05:00.000Z",
+        decision: "accepted" as const,
+      },
+    ],
+  };
+  await mockReviewApi(page, () => ({
+    ...diff,
+    comments: [
+      {
+        ...comment,
+        ...(deleted
+          ? {
+              body: "[deleted]",
+              deleted: true,
+              state: "deferred" as const,
+              rootVersion: 2,
+            }
+          : {}),
+      },
+    ],
+  }));
+  await page.route("**/api/comments/*", (route) => {
+    deleted = true;
+    return route.fulfill({ status: 204 });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Snapshot 2$/ }).click();
+  await page.getByRole("button", { name: "Delete note" }).click();
+  await page.clock.fastForward(7_100);
+  await expect(page.getByText("[deleted]", { exact: true })).toBeVisible();
+  await expect(page.getByText("Reply history remains visible.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Delete note" })).toHaveCount(
+    0,
+  );
 });
 
 test("teaches the first review action once and keeps shortcuts available", async ({
@@ -892,6 +995,10 @@ test("reloads diff comments when repositories share the same path and fingerprin
         createdAt: "2026-07-09T12:30:00.000Z",
         fingerprint: "app-v2",
         outdated: false,
+        state: "pending",
+        rootVersion: 1,
+        threadRevision: 1,
+        replies: [],
       },
     ],
   };
@@ -937,6 +1044,10 @@ test("keeps stale comments as history without attaching them to current lines", 
         createdAt: "2026-07-09T12:30:00.000Z",
         fingerprint: "app-v1",
         outdated: true,
+        state: "pending",
+        rootVersion: 1,
+        threadRevision: 1,
+        replies: [],
       },
     ],
   };

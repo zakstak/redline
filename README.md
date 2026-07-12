@@ -42,6 +42,11 @@ workspace.
 - Approves one file or a complete workspace snapshot without changing Git state.
 - Atomically approves the current filtered file queue and rejects the whole
   batch if any fingerprint is stale.
+- Defers whole changed files outside the active queue without approving them,
+  preserves deferral across edits and explicit Git renames, and clears it after
+  an observed clean state.
+- Stores append-only review threads with pending, accepted, rejected, deferred,
+  and explicitly reopened states.
 - Offers a workspace-level keyboard layout: Normie keeps familiar browser
   controls, while Vim adds modal, cursor-driven diff navigation with visual-line
   selection and a six-line scroll margin.
@@ -57,8 +62,10 @@ workspace.
 Review data lives under the active repository's Git metadata and never appears
 in the worktree:
 
-- `.git/redline/state.json` stores approvals and snapshot history.
-- `.git/redline/review.sqlite` stores comments and workspace settings.
+- `.git/redline/state.json` stores approvals, snapshot history, and canonical
+  deferred paths.
+- `.git/redline/review.sqlite` stores versioned comment threads, idempotency
+  records, and workspace settings.
 
 Both files are created with user-only permissions. Delete `.git/redline` to
 reset Redline for a workspace.
@@ -107,6 +114,85 @@ side-aware ranges:
 
 Send this object to `POST /api/comments`. A stale fingerprint returns HTTP 409
 rather than attaching feedback to changed code.
+
+## CLI
+
+Build and run the non-interactive command surface:
+
+```sh
+npm run build
+npm install --global .
+redline review
+redline diff src/App.tsx
+redline comments add --input comment.json
+redline comments export --format markdown
+redline approve files --input files.json
+redline approve workspace
+```
+
+For development without a global install, use `npm run dev:cli -- review`.
+Remove the installed command with `npm uninstall --global redline`; repository
+review data remains local under each worktree's Git metadata until explicitly
+deleted.
+
+The default `auto` mode validates and discovers a local server for up to exactly
+2,000 ms. A verified match uses server mode. Any discovery transport, status,
+content-type, body, decoding, or identity failure falls back to direct workspace
+access. `--mode server` reports the same failures instead; `--mode direct`
+performs no URL validation or HTTP request. Once an operation request starts,
+Redline never falls back or replays it. The complete operation deadline is
+30,000 ms.
+
+Server URL precedence is `--server-url`, `REDLINE_SERVER_URL`, then
+`http://127.0.0.1:4322`. Only credential-free `http` origins on `localhost`, the
+exact IPv4 address `127.0.0.1`, or `[::1]` are accepted. Paths, queries,
+fragments, redirects, remote hosts, wildcard hosts, and credentials are
+rejected. Every operation carries the discovered process token and canonical Git
+worktree identity, so a workspace switch or replacement process fails closed.
+
+CLI outcomes:
+
+| Exit | Meaning                                                    |
+| ---: | ---------------------------------------------------------- |
+|    0 | Success                                                    |
+|    2 | Invocation or unsafe configuration                         |
+|    3 | Git worktree resolution failure                            |
+|    4 | Server, discovery, transport, response, or timeout failure |
+|    5 | Stale fingerprint or domain conflict                       |
+|    6 | Persistence or unexpected internal failure                 |
+
+Operational success is JSON on stdout by default; diagnostics are structured
+JSON on stderr. Markdown is accepted only by `comments export`. Help and version
+do not inspect Git or contact a server.
+
+### Agent review threads
+
+Agent commands require a verified server and never fall back to direct mode:
+
+```sh
+redline agent review COMMENT_ID
+redline agent review-all
+redline agent respond COMMENT_ID --decision accepted --input reply.md
+redline agent respond COMMENT_ID --decision rejected --input reason.md
+redline agent respond COMMENT_ID --decision deferred --input blocker.md
+redline agent reopen COMMENT_ID
+```
+
+Each decision validates the observed root version and thread revision.
+Acceptance additionally validates the canonical workspace, path, and current
+fingerprint or explicit absent-path state. Agent replies are immutable.
+Rejection needs a reason; deferral needs a blocker. A comment decision does not
+approve a file snapshot, stage files, commit, or change Git state.
+
+### Deferral semantics
+
+`POST /api/review/defer` removes one eligible changed path from active counts,
+search, navigation, and approvals. Deferred files remain changed and directly
+diffable in a separate UI area until restored. Explicit renames transfer the
+marker before obsolete paths are cleared; delete/add pairs Git does not report
+as renames remain independent. Tracked deletions can be deferred.
+`POST /api/review/restore` is idempotent, and an observed clean status removes
+the marker so a later change at that path returns to the active queue.
 
 ## Architecture
 

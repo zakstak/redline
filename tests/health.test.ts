@@ -1,21 +1,25 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
-import { buildServer } from "../server/app.js";
+import { buildServer, bundledClientDir } from "../server/app.js";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
 import { THEME_COLOR_ROLES } from "../shared/theme.js";
 
-const workspaceDir = process.cwd();
-let app = buildServer({ workspaceDir });
+let app = buildServer();
 const fixtureClientDir = fileURLToPath(
   new URL("./fixtures/client", import.meta.url),
 );
 
 afterEach(async () => {
   await app.close();
-  app = buildServer({ workspaceDir });
+  app = buildServer();
 });
 
 describe("GET /api/health", () => {
+  it("resolves production client assets from the package instead of cwd", () => {
+    expect(bundledClientDir()).toBe(
+      fileURLToPath(new URL("../dist/client", import.meta.url)),
+    );
+  });
   it("returns the bootstrap health payload", async () => {
     const response = await app.inject({
       method: "GET",
@@ -31,27 +35,8 @@ describe("GET /api/health", () => {
 });
 
 describe("static bootstrap serving", () => {
-  it("auto-detects a built client without requiring NODE_ENV", async () => {
-    app = buildServer({
-      clientDir: fixtureClientDir,
-      workspaceDir,
-    });
-
-    const response = await app.inject({
-      method: "GET",
-      url: "/",
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toContain("<title>Fixture Shell</title>");
-  });
-
   it("serves the built shell for the root route", async () => {
-    app = buildServer({
-      clientDir: fixtureClientDir,
-      serveStatic: true,
-      workspaceDir,
-    });
+    app = buildServer({ clientDir: fixtureClientDir, serveStatic: true });
 
     const response = await app.inject({
       method: "GET",
@@ -64,11 +49,7 @@ describe("static bootstrap serving", () => {
   });
 
   it("publishes a local API index instead of falling through to the SPA", async () => {
-    app = buildServer({
-      clientDir: fixtureClientDir,
-      serveStatic: true,
-      workspaceDir,
-    });
+    app = buildServer({ clientDir: fixtureClientDir, serveStatic: true });
 
     const response = await app.inject({
       method: "GET",
@@ -220,10 +201,21 @@ describe("static bootstrap serving", () => {
     expect(response.json()).toMatchObject({ error: "Local access only" });
   });
 
-  it("rejects cross-site and form-encoded state mutations", async () => {
+  it.each([
+    "/api/review/snapshot",
+    "/api/review/defer",
+    "/api/review/restore",
+    "/api/comments/comment-id/replies",
+    "/api/comments/comment-id/reopen",
+    "/api/cli/comments",
+    "/api/cli/approve/files",
+    "/api/cli/approve/workspace",
+    "/api/cli/agent/respond/comment-id",
+    "/api/cli/agent/reopen/comment-id",
+  ])("rejects cross-site and form-encoded mutations at %s", async (url) => {
     const crossSite = await app.inject({
       method: "POST",
-      url: "/api/review/snapshot",
+      url,
       headers: {
         host: "127.0.0.1:4322",
         origin: "https://attacker.example",
@@ -237,7 +229,7 @@ describe("static bootstrap serving", () => {
 
     const formPost = await app.inject({
       method: "POST",
-      url: "/api/review/snapshot",
+      url,
       headers: {
         host: "127.0.0.1:4322",
         "content-type": "application/x-www-form-urlencoded",
@@ -249,11 +241,7 @@ describe("static bootstrap serving", () => {
   });
 
   it("returns a 404 json payload for missing assets", async () => {
-    app = buildServer({
-      clientDir: fixtureClientDir,
-      serveStatic: true,
-      workspaceDir,
-    });
+    app = buildServer({ clientDir: fixtureClientDir, serveStatic: true });
 
     const response = await app.inject({
       method: "GET",

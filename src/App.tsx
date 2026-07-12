@@ -1245,7 +1245,11 @@ export default function App() {
         setPathInput(nextWorkspace.root);
         setWorkspaceError("");
         setActivePath((current) => {
-          if (nextWorkspace.files.some((file) => file.path === current))
+          if (
+            [...nextWorkspace.files, ...nextWorkspace.deferredFiles].some(
+              (file) => file.path === current,
+            )
+          )
             return current;
           return (
             nextWorkspace.files.find((file) => file.reviewStatus !== "approved")
@@ -1629,8 +1633,14 @@ export default function App() {
   }, [loadWorkspace, workspace?.root]);
 
   const activeFile = useMemo(
-    () => workspace?.files.find((file) => file.path === activePath) ?? null,
+    () =>
+      [...(workspace?.files ?? []), ...(workspace?.deferredFiles ?? [])].find(
+        (file) => file.path === activePath,
+      ) ?? null,
     [activePath, workspace],
+  );
+  const activeFileDeferred = Boolean(
+    workspace?.deferredFiles.some((file) => file.path === activePath),
   );
   const activeFingerprint = activeFile?.fingerprint ?? "";
   const displayedDiff =
@@ -2250,15 +2260,19 @@ export default function App() {
         body: "{}",
       });
       setWorkspace(result.workspace);
-      setDiff((current) =>
-        current
+      setDiff((current) => {
+        const approved = result.workspace.files.find(
+          (file) =>
+            file.path === current?.path && file.reviewStatus === "approved",
+        );
+        return current && approved
           ? {
               ...current,
               reviewStatus: "approved",
               approvedAt: result.snapshot.approvedAt,
             }
-          : current,
-      );
+          : current;
+      });
       setActionError("");
     } catch (error) {
       setActionError(
@@ -2268,6 +2282,54 @@ export default function App() {
       );
     } finally {
       setApproving("");
+    }
+  };
+
+  const deferFile = async () => {
+    if (!displayedDiff || activeFileDeferred) return;
+    try {
+      const refreshed = await api<WorkspaceResponse>(
+        `/api/review/defer?includeNoise=${includeNoiseRef.current}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ path: displayedDiff.path }),
+        },
+      );
+      setWorkspace(refreshed);
+      const next =
+        refreshed.files.find((file) => file.reviewStatus !== "approved") ??
+        refreshed.files[0];
+      setActivePath(next?.path ?? "");
+      setSelectedLines([]);
+      setCommentBody("");
+      setActionError("");
+    } catch (error) {
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "The file could not be deferred.",
+      );
+    }
+  };
+
+  const restoreFile = async (path: string) => {
+    try {
+      const refreshed = await api<WorkspaceResponse>(
+        `/api/review/restore?includeNoise=${includeNoiseRef.current}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ path }),
+        },
+      );
+      setWorkspace(refreshed);
+      setActivePath(path);
+      setActionError("");
+    } catch (error) {
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "The file could not be restored.",
+      );
     }
   };
 
@@ -2399,8 +2461,10 @@ export default function App() {
         await api(`/api/comments/${encodeURIComponent(pending.comment.id)}`, {
           method: "DELETE",
         });
-        if (activeWorkspaceRootRef.current === pending.workspaceRoot)
+        if (activeWorkspaceRootRef.current === pending.workspaceRoot) {
           await loadWorkspace(true);
+          await loadDiff();
+        }
       } catch (error) {
         if (activeWorkspaceRootRef.current === pending.workspaceRoot) {
           setDiff((current) =>
@@ -2425,7 +2489,7 @@ export default function App() {
         );
       }
     },
-    [loadWorkspace],
+    [loadDiff, loadWorkspace],
   );
 
   const scheduleCommentDeletion = useCallback(
@@ -2784,6 +2848,45 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {workspace.deferredFiles.length > 0 ? (
+            <section
+              className="deferred-files"
+              aria-labelledby="deferred-files-heading"
+            >
+              <h2 id="deferred-files-heading">Deferred</h2>
+              <p>Unapproved changes outside the active queue.</p>
+              <div role="list">
+                {workspace.deferredFiles.map((file) => (
+                  <div
+                    className="deferred-file-row"
+                    key={file.path}
+                    role="listitem"
+                  >
+                    <button
+                      aria-current={
+                        activePath === file.path ? "true" : undefined
+                      }
+                      onClick={() => setActivePath(file.path)}
+                      type="button"
+                    >
+                      <strong>{file.name}</strong>
+                      <small>{file.directory || "workspace root"}</small>
+                      <span className="visually-hidden">
+                        Deferred, {file.path}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => void restoreFile(file.path)}
+                      type="button"
+                    >
+                      Restore
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           {visibleApprovalFiles.length >= 2 ||
           visibleApprovalMessage ||
@@ -3173,9 +3276,22 @@ export default function App() {
                     <span>{workspace.counts.needsReview}</span>
                   </button>
                   <button
+                    className="defer-file-button"
+                    disabled={
+                      !displayedDiff ||
+                      activeFileDeferred ||
+                      displayedDiff.reviewStatus === "approved"
+                    }
+                    onClick={() => void deferFile()}
+                    type="button"
+                  >
+                    Defer file
+                  </button>
+                  <button
                     className="approve-file-button"
                     disabled={
                       !displayedDiff ||
+                      activeFileDeferred ||
                       displayedDiff.reviewStatus === "approved" ||
                       approving === "file"
                     }
@@ -3344,6 +3460,16 @@ export default function App() {
                 </div>
               ) : null}
             </>
+          ) : workspace.files.length === 0 &&
+            workspace.deferredFiles.length > 0 ? (
+            <div className="clean-workspace-state">
+              <p className="eyebrow">Deferred queue</p>
+              <h2>All changed files are deferred.</h2>
+              <p>
+                Choose a deferred file from the sidebar to inspect or restore
+                it.
+              </p>
+            </div>
           ) : workspace.files.length === 0 ? (
             <div className="clean-workspace-state">
               <span className="clean-mark">
@@ -3498,7 +3624,14 @@ export default function App() {
               </div>
               <button
                 className="copy-comments-button"
-                disabled={workspace.counts.comments === 0}
+                disabled={
+                  workspace.counts.comments +
+                    workspace.deferredFiles.reduce(
+                      (total, file) => total + file.commentCount,
+                      0,
+                    ) ===
+                  0
+                }
                 onClick={() => void copyComments()}
                 type="button"
               >
@@ -3580,18 +3713,46 @@ export default function App() {
                     )}
                   </header>
                   <p>{comment.body}</p>
+                  <p
+                    className="thread-state"
+                    aria-label={`Thread state: ${comment.state ?? "pending"}`}
+                  >
+                    {!comment.state || comment.state === "pending"
+                      ? "Pending review"
+                      : `Thread ${comment.state}`}
+                  </p>
+                  {(comment.replies?.length ?? 0) > 0 ? (
+                    <ol className="thread-replies" aria-label="Thread replies">
+                      {comment.replies?.map((reply) => (
+                        <li key={reply.id}>
+                          <div>
+                            <strong>
+                              {reply.actor === "agent" ? "Agent" : "You"}
+                            </strong>
+                            {reply.decision ? (
+                              <span>{reply.decision}</span>
+                            ) : null}
+                            <time>{formatRelativeTime(reply.createdAt)}</time>
+                          </div>
+                          <p>{reply.body}</p>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : null}
                   {comment.outdated ? (
                     <p className="stale-comment-note">
                       The file changed after this note. It stays on the reviewed
                       version and is not attached to the current line.
                     </p>
                   ) : null}
-                  <button
-                    onClick={() => scheduleCommentDeletion(comment)}
-                    type="button"
-                  >
-                    Delete note
-                  </button>
+                  {!comment.deleted ? (
+                    <button
+                      onClick={() => scheduleCommentDeletion(comment)}
+                      type="button"
+                    >
+                      Delete note
+                    </button>
+                  ) : null}
                 </article>
               )) ?? null}
               {displayedDiff &&

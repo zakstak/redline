@@ -1,0 +1,7 @@
+---
+interface:
+  display_name: "Redline Agent Review"
+  short_description: "Resolve versioned Redline review threads safely"
+  default_prompt: >-
+    Use $redline-agent-review to inspect pending Redline feedback, implement and
+    validate it, then record an accepted, rejected, or deferred decision.

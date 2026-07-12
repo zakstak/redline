@@ -9,6 +9,7 @@ import {
   readFile,
   readlink,
   rename,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import {
@@ -29,10 +30,13 @@ import type {
   FileApprovalRequest,
   FilesApprovalResponse,
   ReviewComment,
+  ReviewDecision,
   ReviewAnchor,
   ReviewDataResponse,
   ReviewSettings,
   ReviewStatus,
+  ReviewThreadPacket,
+  ReviewThreadState,
   SnapshotResponse,
   WorkspaceResponse,
   WorkspaceChangeEvent,
@@ -71,6 +75,7 @@ interface ReviewStore {
   version: 1;
   approvals: Record<string, StoredApproval>;
   snapshots: StoredSnapshot[];
+  deferredPaths: string[];
 }
 
 type PersistedReviewStore = ReviewStore;
@@ -127,6 +132,13 @@ function validatePersistedStore(
         "each snapshot must contain id, approvedAt, head, and string fingerprints",
       );
   }
+  if (store.deferredPaths === undefined) store.deferredPaths = [];
+  if (
+    !Array.isArray(store.deferredPaths) ||
+    store.deferredPaths.some((path) => typeof path !== "string")
+  ) {
+    invalid("deferredPaths must be an array of strings");
+  }
 
   return store as unknown as ReviewStore;
 }
@@ -176,10 +188,6 @@ const generatedPathPatterns = [
   /\.map$/i,
 ];
 
-const isolatedGitEnvironment = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
-);
-
 const languageByExtension: Record<string, string> = {
   ".css": "css",
   ".go": "go",
@@ -213,8 +221,12 @@ function git(
       args,
       {
         cwd: root,
+        env: Object.fromEntries(
+          Object.entries(process.env).filter(
+            ([key]) => !key.startsWith("GIT_"),
+          ),
+        ),
         encoding: "utf8",
-        env: isolatedGitEnvironment,
         maxBuffer: 48 * 1024 * 1024,
         windowsHide: true,
       },
@@ -273,6 +285,19 @@ function assertPathInside(root: string, filePath: string) {
     throw new Error("The requested path is outside the active workspace.");
   }
   return absolutePath;
+}
+
+function assertCanonicalReviewPath(root: string, filePath: string) {
+  if (
+    !filePath ||
+    isAbsolute(filePath) ||
+    filePath.includes("\\") ||
+    filePath.split("/").some((part) => !part || part === "." || part === "..")
+  ) {
+    throw new Error("Use a canonical repository-relative path.");
+  }
+  assertPathInside(root, filePath);
+  return filePath;
 }
 
 function reviewStatusFor(
@@ -575,6 +600,19 @@ export class ReviewWorkspace {
     this.database = null;
   }
 
+  getRoot() {
+    return this.root;
+  }
+
+  async getCanonicalRoot() {
+    if (!this.gitDir) {
+      this.root = (
+        await git(this.root, ["rev-parse", "--show-toplevel"])
+      ).trim();
+    }
+    return this.root;
+  }
+
   subscribeToChanges(listener: (event: WorkspaceChangeEvent) => void) {
     this.watchListeners.add(listener);
     return () => {
@@ -690,7 +728,7 @@ export class ReviewWorkspace {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT")
-        return { version: 1, approvals: {}, snapshots: [] };
+        return { version: 1, approvals: {}, snapshots: [], deferredPaths: [] };
       if (error instanceof SyntaxError) {
         throw new Error(
           `Review state is malformed at ${path}. The file was left untouched.`,
@@ -708,6 +746,7 @@ export class ReviewWorkspace {
       version: 1,
       approvals: safeRecord(parsed.approvals),
       snapshots: parsed.snapshots,
+      deferredPaths: [...new Set(parsed.deferredPaths)],
     };
   }
 
@@ -729,6 +768,62 @@ export class ReviewWorkspace {
       () => undefined,
     );
     return queued;
+  }
+
+  private async withStoreLock<T>(operation: () => Promise<T>): Promise<T> {
+    const lockPath = `${this.storePath()}.lock`;
+    const ownerPath = resolve(lockPath, "owner.json");
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        await mkdir(lockPath, { mode: 0o700 });
+        await writeFile(
+          ownerPath,
+          JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+          {
+            encoding: "utf8",
+            mode: 0o600,
+          },
+        );
+        try {
+          return await operation();
+        } finally {
+          await rm(lockPath, { recursive: true, force: true });
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        try {
+          const owner = JSON.parse(await readFile(ownerPath, "utf8")) as {
+            pid?: unknown;
+            createdAt?: unknown;
+          };
+          const age = Date.now() - Number(owner.createdAt ?? 0);
+          let alive = true;
+          if (
+            typeof owner.pid === "number" &&
+            Number.isSafeInteger(owner.pid)
+          ) {
+            try {
+              process.kill(owner.pid, 0);
+            } catch (cause) {
+              alive = (cause as NodeJS.ErrnoException).code === "EPERM";
+            }
+          }
+          if (!alive && age > 2_000) {
+            await rm(lockPath, { recursive: true, force: true });
+            continue;
+          }
+        } catch {
+          // An incomplete lock is only reclaimed after its owner had ample time to finish creating it.
+          const lock = await lstat(lockPath);
+          if (Date.now() - lock.mtimeMs > 30_000) {
+            await rm(lockPath, { recursive: true, force: true });
+            continue;
+          }
+        }
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+      }
+    }
+    throw new Error("Timed out waiting for the repository review-state lock.");
   }
 
   private async readStable<T>(reader: () => Promise<T>): Promise<T> {
@@ -758,9 +853,11 @@ export class ReviewWorkspace {
           "The active workspace changed before the review state could be saved.",
         );
       }
-      const store = await this.readStore();
-      result = await mutator(store);
-      await this.writeStore(store);
+      await this.withStoreLock(async () => {
+        const store = await this.readStore();
+        result = await mutator(store);
+        await this.writeStore(store);
+      });
     });
     await mutation;
     return result as T;
@@ -1035,11 +1132,34 @@ export class ReviewWorkspace {
     return this.readStable(() => this.getWorkspaceOnce(includeNoise));
   }
 
+  async withWorkspaceIdentity<T>(
+    expectedRoot: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    await this.ensureInitialized();
+    if (this.root !== expectedRoot) throw new Error("workspace_mismatch");
+    const generation = this.workspaceGeneration;
+    const result = await operation();
+    if (generation !== this.workspaceGeneration || this.root !== expectedRoot) {
+      throw new Error("workspace_mismatch");
+    }
+    return result;
+  }
+
   private async getWorkspaceOnce(
     includeNoise = false,
   ): Promise<WorkspaceResponse> {
     await this.ensureInitialized();
-    const store = await this.readStore();
+    const generation = this.workspaceGeneration;
+    const root = this.root;
+    const storePath = this.storePath();
+    const persisted = await this.readPersistedStore(storePath);
+    const store: ReviewStore = {
+      version: 1,
+      approvals: safeRecord(persisted.approvals),
+      snapshots: persisted.snapshots,
+      deferredPaths: [...new Set(persisted.deferredPaths)],
+    };
     const [head, branch] = await Promise.all([
       this.currentHead(),
       git(this.root, ["branch", "--show-current"]).then(
@@ -1049,9 +1169,54 @@ export class ReviewWorkspace {
     const allFiles = (await this.changedFiles(head, store)).sort(
       (first, second) => first.path.localeCompare(second.path),
     );
-    const visibleFiles = includeNoise
+    const changedPaths = new Set(allFiles.map((file) => file.path));
+    const reconcileDeferred = (paths: string[]) => {
+      const next = new Set(paths);
+      for (const file of allFiles) {
+        if (
+          file.kind === "renamed" &&
+          file.originalPath &&
+          next.delete(file.originalPath)
+        ) {
+          next.add(file.path);
+        }
+      }
+      return new Set([...next].filter((path) => changedPaths.has(path)));
+    };
+    let deferred = reconcileDeferred(store.deferredPaths);
+    if (
+      [...deferred].sort().join("\0") !==
+      [...store.deferredPaths].sort().join("\0")
+    ) {
+      await this.withStoreLock(async () => {
+        if (generation !== this.workspaceGeneration || root !== this.root)
+          return;
+        const currentPersisted = await this.readPersistedStore(storePath);
+        if (generation !== this.workspaceGeneration || root !== this.root)
+          return;
+        const currentStore: ReviewStore = {
+          version: 1,
+          approvals: safeRecord(currentPersisted.approvals),
+          snapshots: currentPersisted.snapshots,
+          deferredPaths: [...new Set(currentPersisted.deferredPaths)],
+        };
+        deferred = reconcileDeferred(currentStore.deferredPaths);
+        currentStore.deferredPaths = [...deferred].sort();
+        if (generation !== this.workspaceGeneration || root !== this.root)
+          return;
+        await this.writeStore(currentStore, storePath);
+        store.deferredPaths = currentStore.deferredPaths;
+      });
+    }
+    const reviewableFiles = includeNoise
       ? allFiles
       : allFiles.filter((file) => !file.binary && !file.generated);
+    const visibleFiles = reviewableFiles.filter(
+      (file) => !deferred.has(file.path),
+    );
+    const deferredFiles = reviewableFiles.filter((file) =>
+      deferred.has(file.path),
+    );
     const latestStoredSnapshot = store.snapshots.at(-1);
     const comments = visibleFiles.reduce(
       (total, file) => total + file.commentCount,
@@ -1064,7 +1229,8 @@ export class ReviewWorkspace {
       branch,
       head,
       files: visibleFiles,
-      hiddenNoiseCount: allFiles.length - visibleFiles.length,
+      deferredFiles,
+      hiddenNoiseCount: allFiles.length - reviewableFiles.length,
       counts: {
         total: visibleFiles.length,
         needsReview: visibleFiles.filter(
@@ -1091,7 +1257,9 @@ export class ReviewWorkspace {
   private async getDiffOnce(path: string, context = 3): Promise<DiffResponse> {
     await this.ensureInitialized();
     const workspace = await this.getWorkspaceOnce(true);
-    const file = workspace.files.find((candidate) => candidate.path === path);
+    const file = [...workspace.files, ...workspace.deferredFiles].find(
+      (candidate) => candidate.path === path,
+    );
     if (!file)
       throw new Error("That file is no longer part of the current change set.");
     if (file.binary)
@@ -1174,9 +1342,76 @@ export class ReviewWorkspace {
 
     const approvedAt = new Date().toISOString();
     await this.mutateStore(generation, (store) => {
+      if (store.deferredPaths.includes(path)) {
+        throw new Error("The file was deferred before approval completed.");
+      }
       store.approvals[path] = { fingerprint: file.fingerprint, approvedAt };
     });
     return { path, fingerprint: file.fingerprint, approvedAt };
+  }
+
+  async deferFile(
+    path: string,
+    includeNoise = false,
+  ): Promise<WorkspaceResponse> {
+    await this.ensureInitialized();
+    const canonicalPath = assertCanonicalReviewPath(this.root, path);
+    const generation = this.workspaceGeneration;
+    return this.enqueueExclusive(async () => {
+      if (generation !== this.workspaceGeneration) {
+        throw new Error(
+          "The active workspace changed before the file could be deferred.",
+        );
+      }
+      await this.withStoreLock(async () => {
+        const store = await this.readStore();
+        const head = await this.currentHead();
+        const files = await this.changedFiles(head, store);
+        const file = files.find(
+          (candidate) => candidate.path === canonicalPath,
+        );
+        if (!file)
+          throw new Error("Only a current changed file can be deferred.");
+        if (file.reviewStatus === "approved") {
+          throw new Error(
+            "An approved snapshot cannot be deferred until it changes.",
+          );
+        }
+        if (!store.deferredPaths.includes(canonicalPath)) {
+          store.deferredPaths.push(canonicalPath);
+          store.deferredPaths.sort();
+          await this.writeStore(store);
+        }
+      });
+      return this.getWorkspaceOnce(includeNoise);
+    });
+  }
+
+  async restoreFile(
+    path: string,
+    includeNoise = false,
+  ): Promise<WorkspaceResponse> {
+    await this.ensureInitialized();
+    const canonicalPath = assertCanonicalReviewPath(this.root, path);
+    const generation = this.workspaceGeneration;
+    return this.enqueueExclusive(async () => {
+      if (generation !== this.workspaceGeneration) {
+        throw new Error(
+          "The active workspace changed before the file could be restored.",
+        );
+      }
+      await this.withStoreLock(async () => {
+        const store = await this.readStore();
+        const next = store.deferredPaths.filter(
+          (candidate) => candidate !== canonicalPath,
+        );
+        if (next.length !== store.deferredPaths.length) {
+          store.deferredPaths = next;
+          await this.writeStore(store);
+        }
+      });
+      return this.getWorkspaceOnce(includeNoise);
+    });
   }
 
   async approveFiles(
@@ -1223,6 +1458,14 @@ export class ReviewWorkspace {
     const approvedAt = new Date().toISOString();
     const approvals = requests.map((request) => ({ ...request, approvedAt }));
     await this.mutateStore(generation, (store) => {
+      const deferredRequest = approvals.find((approval) =>
+        store.deferredPaths.includes(approval.path),
+      );
+      if (deferredRequest) {
+        throw new Error(
+          `Nothing was approved because ${deferredRequest.path} is deferred.`,
+        );
+      }
       for (const approval of approvals) {
         store.approvals[approval.path] = {
           fingerprint: approval.fingerprint,
@@ -1251,6 +1494,14 @@ export class ReviewWorkspace {
     };
 
     await this.mutateStore(generation, (store) => {
+      const deferredFile = workspace.files.find((file) =>
+        store.deferredPaths.includes(file.path),
+      );
+      if (deferredFile) {
+        throw new Error(
+          `The active queue changed because ${deferredFile.path} was deferred.`,
+        );
+      }
       for (const file of workspace.files) {
         store.approvals[file.path] = {
           fingerprint: file.fingerprint,
@@ -1326,6 +1577,10 @@ export class ReviewWorkspace {
       body,
       createdAt: new Date().toISOString(),
       fingerprint: currentDiff.fingerprint,
+      state: "pending",
+      rootVersion: 1,
+      threadRevision: 0,
+      replies: [],
     };
     await this.enqueueExclusive(() => {
       if (generation !== this.workspaceGeneration) {
@@ -1352,6 +1607,191 @@ export class ReviewWorkspace {
     });
   }
 
+  private async packetForComment(
+    comment: Omit<ReviewComment, "outdated">,
+  ): Promise<ReviewThreadPacket> {
+    return this.readStable(async () => {
+      const workspace = await this.getWorkspaceOnce(true);
+      const current = [...workspace.files, ...workspace.deferredFiles].find(
+        (file) => file.path === comment.path,
+      );
+      return {
+        version: 1,
+        workspaceRoot: workspace.root,
+        comment: {
+          ...comment,
+          outdated: current?.fingerprint !== comment.fingerprint,
+        },
+        currentFingerprint: current?.fingerprint ?? null,
+        acceptedContext: {
+          workspaceRoot: workspace.root,
+          commentId: comment.id,
+          rootVersion: comment.rootVersion,
+          threadRevision: comment.threadRevision,
+          path: comment.path,
+          fingerprint: current?.fingerprint ?? null,
+        },
+      };
+    });
+  }
+
+  async getThreadPacket(id: string): Promise<ReviewThreadPacket> {
+    const comment = this.reviewDatabase().commentById(id);
+    if (!comment) throw new Error("not_found");
+    return this.packetForComment(comment);
+  }
+
+  async getPendingThreadPackets(): Promise<ReviewThreadPacket[]> {
+    const pending = this.reviewDatabase()
+      .allComments()
+      .filter((comment) => comment.state === "pending" && !comment.deleted);
+    return Promise.all(
+      pending.map((comment) => this.getThreadPacket(comment.id)),
+    );
+  }
+
+  async mutateThread(input: {
+    commentId: string;
+    expectedState: ReviewThreadState;
+    expectedRootVersion: number;
+    expectedThreadRevision: number;
+    requestId: string;
+    body?: string;
+    decision?: ReviewDecision;
+    reopen?: boolean;
+    acceptedContext?: ReviewThreadPacket["acceptedContext"];
+  }): Promise<ReviewThreadPacket> {
+    await this.ensureInitialized();
+    const validState = new Set<ReviewThreadState>([
+      "pending",
+      "accepted",
+      "rejected",
+      "deferred",
+    ]);
+    const validDecision = new Set<ReviewDecision>([
+      "accepted",
+      "rejected",
+      "deferred",
+    ]);
+    if (
+      typeof input.commentId !== "string" ||
+      !input.commentId ||
+      !validState.has(input.expectedState) ||
+      !Number.isSafeInteger(input.expectedRootVersion) ||
+      input.expectedRootVersion < 1 ||
+      !Number.isSafeInteger(input.expectedThreadRevision) ||
+      input.expectedThreadRevision < 0 ||
+      typeof input.requestId !== "string" ||
+      !input.requestId ||
+      input.requestId.length > 200 ||
+      (input.body !== undefined && typeof input.body !== "string") ||
+      (input.decision !== undefined && !validDecision.has(input.decision)) ||
+      (input.reopen !== undefined && typeof input.reopen !== "boolean")
+    ) {
+      throw new Error("invalid_input");
+    }
+    const generation = this.workspaceGeneration;
+    return this.enqueueExclusive(async () => {
+      if (generation !== this.workspaceGeneration)
+        throw new Error("workspace_mismatch");
+      const body = input.body?.trim();
+      if (!input.decision && !input.reopen && !body) {
+        throw new Error("A reply requires a non-empty body.");
+      }
+      if (input.decision && !body) {
+        throw new Error("An agent decision requires a complete reply body.");
+      }
+      if (body && body.length > 4000)
+        throw new Error("Replies must be 4,000 characters or fewer.");
+      const semantic = {
+        ...input,
+        body: body ?? null,
+        acceptedContext: input.acceptedContext ?? null,
+      };
+      const requestHash = createHash("sha256")
+        .update(JSON.stringify(semantic))
+        .digest("hex");
+      const scope = `${this.root}:${input.reopen ? "reopen" : input.decision ? "decision" : "reply"}`;
+      const prior = this.reviewDatabase().priorResponse(
+        scope,
+        input.requestId,
+        requestHash,
+      );
+      if (prior) return this.packetForComment(prior);
+      const current = await this.getThreadPacket(input.commentId);
+      if (input.reopen && current.comment.deleted)
+        throw new Error("invalid_state");
+      if (
+        input.acceptedContext &&
+        current.comment.state === input.expectedState
+      ) {
+        if (current.comment.rootVersion !== input.expectedRootVersion) {
+          throw new Error("stale_root");
+        }
+        if (current.comment.threadRevision !== input.expectedThreadRevision) {
+          throw new Error("stale_thread");
+        }
+        const context = input.acceptedContext;
+        if (
+          context.workspaceRoot !== this.root ||
+          context.commentId !== current.comment.id ||
+          context.rootVersion !== current.comment.rootVersion ||
+          context.threadRevision !== current.comment.threadRevision ||
+          context.path !== current.comment.path ||
+          context.fingerprint !== current.currentFingerprint
+        )
+          throw new Error("stale_context");
+      }
+      if (
+        (input.decision === "rejected" || input.decision === "deferred") &&
+        !body
+      ) {
+        throw new Error("A rejection or deferral requires an explanation.");
+      }
+      if (input.decision === "accepted" && !input.acceptedContext) {
+        throw new Error("Acceptance requires the observed accepted context.");
+      }
+      const nextState: ReviewThreadState = input.reopen
+        ? "pending"
+        : (input.decision ?? input.expectedState);
+      if (input.reopen && input.expectedState === "pending")
+        throw new Error("invalid_state");
+      if (input.decision && input.expectedState !== "pending")
+        throw new Error("invalid_state");
+      const answeredRoot = {
+        path: current.comment.path,
+        body: current.comment.body,
+        anchors: current.comment.anchors,
+        fingerprint: current.comment.fingerprint,
+        rootVersion: current.comment.rootVersion,
+      };
+      const persisted = this.reviewDatabase().mutateThread({
+        commentId: input.commentId,
+        expectedState: input.expectedState,
+        expectedRootVersion: input.expectedRootVersion,
+        expectedThreadRevision: input.expectedThreadRevision,
+        requestId: input.requestId,
+        requestHash,
+        scope,
+        ...(body
+          ? {
+              reply: {
+                id: randomUUID(),
+                actor: input.decision ? "agent" : "user",
+                body,
+                createdAt: new Date().toISOString(),
+                ...(input.decision ? { decision: input.decision } : {}),
+                requestId: input.requestId,
+                answeredRoot,
+              },
+            }
+          : {}),
+        nextState,
+      });
+      return this.packetForComment(persisted);
+    });
+  }
+
   async getReviewData(): Promise<ReviewDataResponse> {
     return this.readStable(() => this.getReviewDataOnce());
   }
@@ -1359,7 +1799,10 @@ export class ReviewWorkspace {
   private async getReviewDataOnce(): Promise<ReviewDataResponse> {
     const workspace = await this.getWorkspace(false);
     const fingerprints = new Map(
-      workspace.files.map((file) => [file.path, file.fingerprint]),
+      [...workspace.files, ...workspace.deferredFiles].map((file) => [
+        file.path,
+        file.fingerprint,
+      ]),
     );
     const comments = this.reviewDatabase()
       .allComments()
@@ -1559,9 +2002,19 @@ export class ReviewWorkspace {
       lines.push(`## ${comment.path}`);
       lines.push("");
       lines.push(`${lineLabel}${comment.outdated ? " (outdated)" : ""}`);
+      lines.push(
+        `State: ${comment.state} · root v${comment.rootVersion} · thread r${comment.threadRevision}`,
+      );
       lines.push("");
-      lines.push(comment.body);
+      lines.push(comment.deleted ? "_Original note deleted._" : comment.body);
       lines.push("");
+      for (const reply of comment.replies) {
+        lines.push(
+          `> **${reply.actor}${reply.decision ? ` · ${reply.decision}` : ""}** — ${reply.createdAt}`,
+        );
+        lines.push(`> ${reply.body.replaceAll("\n", "\n> ")}`);
+        lines.push("");
+      }
 
       const fileDiff = diffByPath.get(comment.path);
       if (fileDiff) {
