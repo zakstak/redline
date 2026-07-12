@@ -502,10 +502,15 @@ export class ReviewWorkspace {
   }
 
   async initialize() {
-    await this.openWorkspace(this.root);
+    await this.activateWorkspace(this.root);
   }
 
   async openWorkspace(requestedPath: string) {
+    await this.activateWorkspace(requestedPath);
+    return this.getWorkspace();
+  }
+
+  private async activateWorkspace(requestedPath: string) {
     const candidate = isAbsolute(requestedPath)
       ? requestedPath
       : resolve(this.root, requestedPath);
@@ -554,7 +559,6 @@ export class ReviewWorkspace {
       if (this.workspaceSwitchPromise === switchPromise)
         this.workspaceSwitchPromise = null;
     }
-    return this.getWorkspace();
   }
 
   close() {
