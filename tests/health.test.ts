@@ -74,6 +74,7 @@ describe("static bootstrap serving", () => {
       url: "/api/openapi.json",
     });
     const document = response.json<{
+      paths: Record<string, unknown>;
       components: {
         schemas: {
           Comment: { properties: Record<string, unknown> };
@@ -114,6 +115,37 @@ describe("static bootstrap serving", () => {
     expect(document.components.schemas.Comment.properties).not.toHaveProperty(
       "lineNumber",
     );
+    expect(document.paths).toMatchObject({
+      "/api/settings/theme": {
+        put: {
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  required: ["workspaceRoot", "preference"],
+                  properties: {
+                    preference: {
+                      $ref: "#/components/schemas/ThemePreference",
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        delete: {
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { required: ["workspaceRoot"] },
+              },
+            },
+          },
+        },
+      },
+    });
   });
 
   it("rejects non-loopback host headers", async () => {

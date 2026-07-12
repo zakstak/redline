@@ -1015,12 +1015,21 @@ export default function App() {
     try {
       const nextSettings = await api<ReviewSettings>("/api/settings");
       if (requestId !== settingsRequestRef.current) return null;
-      applyTheme(nextSettings.theme);
-      setSettings(nextSettings);
+      const themeSavePending =
+        themeDebounceRef.current !== null ||
+        themeMutationInFlightRef.current ||
+        themeQueueRef.current.length > 0;
+      if (!themeSavePending) applyTheme(nextSettings.theme);
+      setSettings((current) => ({
+        ...nextSettings,
+        theme: themeSavePending ? current.theme : nextSettings.theme,
+      }));
       setContextLines(nextSettings.diffContextLines);
       setSettingsLoaded(true);
-      setThemeSaveState("saved");
-      setThemeUnsaved(false);
+      if (!themeSavePending) {
+        setThemeSaveState("saved");
+        setThemeUnsaved(false);
+      }
       return nextSettings;
     } catch (error) {
       if (requestId !== settingsRequestRef.current) return null;
@@ -1083,9 +1092,15 @@ export default function App() {
       }
     } catch {
       themeMutationInFlightRef.current = false;
-      themeQueueRef.current.unshift(operation);
-      setThemeSaveState("failed");
-      setThemeUnsaved(true);
+      if (operation.revision === latestThemeIntentRef.current) {
+        themeQueueRef.current.unshift(operation);
+        setThemeSaveState("failed");
+        setThemeUnsaved(true);
+      } else {
+        setThemeSaveState("saving");
+        setThemeUnsaved(true);
+        if (themeQueueRef.current.length > 0) flushThemeQueueRef.current();
+      }
     }
   }, []);
   flushThemeQueueRef.current = () => void flushThemeQueue();
@@ -2981,7 +2996,9 @@ export default function App() {
                 <>
                   <strong>
                     {workspace.latestSnapshot.changedCount} file
-                    {workspace.latestSnapshot.changedCount === 1 ? "" : "s"}{" "}
+                    {workspace.latestSnapshot.changedCount === 1
+                      ? ""
+                      : "s"}{" "}
                     changed since approval.
                   </strong>
                   <p>Only those files need another look.</p>
@@ -2991,7 +3008,9 @@ export default function App() {
                   <strong>Snapshot holds.</strong>
                   <p>
                     {workspace.latestSnapshot.unchangedCount} approved file
-                    {workspace.latestSnapshot.unchangedCount === 1 ? "" : "s"}{" "}
+                    {workspace.latestSnapshot.unchangedCount === 1
+                      ? ""
+                      : "s"}{" "}
                     remain unchanged.
                   </p>
                 </>

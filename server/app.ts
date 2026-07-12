@@ -146,6 +146,24 @@ const openApiDocument = {
     "/api/settings/theme": {
       put: {
         summary: "Validate and save the active workspace theme",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["workspaceRoot", "preference"],
+                properties: {
+                  workspaceRoot: { type: "string" },
+                  preference: {
+                    $ref: "#/components/schemas/ThemePreference",
+                  },
+                },
+              },
+            },
+          },
+        },
         responses: {
           "200": { description: "Updated workspace settings" },
           "400": { description: "Invalid or stale theme preference" },
@@ -153,6 +171,19 @@ const openApiDocument = {
       },
       delete: {
         summary: "Delete the active workspace theme preference",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["workspaceRoot"],
+                properties: { workspaceRoot: { type: "string" } },
+              },
+            },
+          },
+        },
         responses: {
           "200": { description: "Default workspace theme settings" },
           "400": { description: "Stale workspace identity" },
@@ -573,21 +604,21 @@ const openApiDocument = {
           version: { type: "integer", const: 1 },
           diffContextLines: { type: "integer", minimum: 0, maximum: 20 },
           keyboardLayout: { type: "string", enum: ["normie", "vim"] },
-          theme: {
+          theme: { $ref: "#/components/schemas/ThemePreference" },
+        },
+      },
+      ThemePreference: {
+        type: "object",
+        additionalProperties: false,
+        required: ["version", "preset", "overrides"],
+        properties: {
+          version: { type: "integer", const: 1 },
+          preset: { type: "string", enum: ["redline", "dusk", "paper"] },
+          overrides: {
             type: "object",
-            additionalProperties: false,
-            required: ["version", "preset", "overrides"],
-            properties: {
-              version: { type: "integer", const: 1 },
-              preset: { type: "string", enum: ["redline", "dusk", "paper"] },
-              overrides: {
-                type: "object",
-                additionalProperties: {
-                  type: "string",
-                  pattern:
-                    "^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
-                },
-              },
+            additionalProperties: {
+              type: "string",
+              pattern: "^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
             },
           },
         },
