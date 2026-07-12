@@ -1662,6 +1662,82 @@ describe("local review snapshots", () => {
     }
   });
 
+  it("keeps mapped replacement-file imports on a reused rename-source path", async () => {
+    await writeFile(join(repository, "before-name.ts"), "original\n", "utf8");
+    await runGit("add", "before-name.ts");
+    await runGit("commit", "-m", "add reusable rename source");
+    await runGit("mv", "before-name.ts", "after-name.ts");
+    await writeFile(
+      join(repository, "before-name.ts"),
+      "replacement\n",
+      "utf8",
+    );
+
+    const workspace = new ReviewWorkspace(repository);
+    try {
+      await workspace.initialize();
+      const internal = workspace as unknown as {
+        githubImports: {
+          hasCommentsForDiff(paths: string[]): Promise<boolean>;
+          commentsForDiff(diff: DiffResponse): Promise<ReviewComment[]>;
+        };
+      };
+      internal.githubImports = {
+        hasCommentsForDiff: (paths) => {
+          expect(paths).toContain("before-name.ts");
+          return Promise.resolve(true);
+        },
+        commentsForDiff: (diff) =>
+          Promise.resolve([
+            {
+              id: "github:base/project#1:replacement",
+              path: diff.path,
+              anchors: [{ side: "new", startLine: 1, endLine: 1 }],
+              body: "Review the replacement file.",
+              author: {
+                name: "Reviewer",
+                login: "reviewer",
+                initials: "R",
+                avatarUrl: null,
+              },
+              createdAt: "2026-07-12T00:00:00.000Z",
+              fingerprint: diff.fingerprint,
+              outdated: false,
+              state: "pending",
+              rootVersion: 1,
+              threadRevision: 0,
+              replies: [],
+              source: "github",
+              readOnly: true,
+              github: {
+                repository: "base/project",
+                pullRequest: 1,
+                threadId: "replacement",
+                url: "https://github.com/base/project/pull/1#discussion_r1",
+                mapping: "mapped",
+                originalPath: "before-name.ts",
+                isResolved: false,
+                isOutdated: false,
+                resolved: false,
+                synchronizedAt: "2026-07-12T00:00:00.000Z",
+              },
+            },
+          ]),
+      };
+
+      const result = await workspace.getDiff("before-name.ts");
+      expect(result.comments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "github:base/project#1:replacement",
+          }),
+        ]),
+      );
+    } finally {
+      workspace.close();
+    }
+  });
+
   it("requires the viewed fingerprint when approving through the API", async () => {
     const app = buildServer({ workspaceDir: repository });
     try {

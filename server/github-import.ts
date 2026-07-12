@@ -766,16 +766,17 @@ export class GitHubImportManager {
     return result.stdout;
   }
 
-  private async git(args: string[]) {
-    return (await this.command("git", args)).trim();
+  private async git(args: string[], signal?: AbortSignal) {
+    return (await this.command("git", args, false, signal)).trim();
   }
 
-  private async configValues(key: string) {
+  private async configValues(key: string, signal?: AbortSignal) {
     const result = await this.execute("git", ["config", "--get-all", key], {
       cwd: this.root,
       timeoutMs: 10_000,
       stdoutLimit: 64 * 1024,
       stderrLimit: 64 * 1024,
+      signal,
     });
     if (result.code === 1) return [];
     if (result.code !== 0) throw new Error("invalid_git_configuration");
@@ -784,9 +785,13 @@ export class GitHubImportManager {
     return values;
   }
 
-  private async remoteIdentity(name: string, requireFetch = false) {
-    const fetchUrls = await this.configValues(`remote.${name}.url`);
-    const pushUrls = await this.configValues(`remote.${name}.pushurl`);
+  private async remoteIdentity(
+    name: string,
+    requireFetch = false,
+    signal?: AbortSignal,
+  ) {
+    const fetchUrls = await this.configValues(`remote.${name}.url`, signal);
+    const pushUrls = await this.configValues(`remote.${name}.pushurl`, signal);
     if (requireFetch && fetchUrls.length === 0)
       throw new Error("missing_fetch_url");
     const values = fetchUrls;
@@ -803,17 +808,22 @@ export class GitHubImportManager {
     };
   }
 
-  private async resolveRepositories() {
-    const remotes = (await this.git(["remote"])).split("\n").filter(Boolean);
+  private async resolveRepositories(signal?: AbortSignal) {
+    const remotes = (await this.git(["remote"], signal))
+      .split("\n")
+      .filter(Boolean);
     let base: GitHubIdentity | null = null;
     if (remotes.includes("upstream")) {
-      base = (await this.remoteIdentity("upstream", true))?.identity ?? null;
+      base =
+        (await this.remoteIdentity("upstream", true, signal))?.identity ?? null;
     } else if (remotes.includes("origin")) {
-      base = (await this.remoteIdentity("origin", true))?.identity ?? null;
+      base =
+        (await this.remoteIdentity("origin", true, signal))?.identity ?? null;
     } else {
       const identities = await Promise.all(
         remotes.map(
-          async (remote) => (await this.remoteIdentity(remote, true))?.identity,
+          async (remote) =>
+            (await this.remoteIdentity(remote, true, signal))?.identity,
         ),
       );
       if (identities.length === 0 || identities.some((value) => !value))
@@ -824,7 +834,7 @@ export class GitHubImportManager {
     }
     if (!base) throw new Error("missing_base");
 
-    const branch = await this.git(["branch", "--show-current"]);
+    const branch = await this.git(["branch", "--show-current"], signal);
     if (!branch) return { base, head: null, branch: null };
     const keys = [
       `branch.${branch}.pushRemote`,
@@ -833,7 +843,7 @@ export class GitHubImportManager {
     ];
     let selected: string | null = null;
     for (const key of keys) {
-      const values = await this.configValues(key);
+      const values = await this.configValues(key, signal);
       if (values.length === 0) continue;
       if (
         values.length !== 1 ||
@@ -847,7 +857,7 @@ export class GitHubImportManager {
     if (!selected) {
       const identities = await Promise.all(
         remotes.map(async (remote) => {
-          const resolved = await this.remoteIdentity(remote, true);
+          const resolved = await this.remoteIdentity(remote, true, signal);
           return resolved?.identity;
         }),
       );
@@ -855,7 +865,7 @@ export class GitHubImportManager {
         throw new Error("ambiguous_head");
       return { base, head: identities[0] ?? null, branch };
     }
-    const remote = await this.remoteIdentity(selected, true);
+    const remote = await this.remoteIdentity(selected, true, signal);
     const headValues =
       remote && remote.pushUrls.length > 0
         ? remote.pushUrls
@@ -918,19 +928,24 @@ export class GitHubImportManager {
     }
   }
 
-  private async discoverIdentity(): Promise<PullRequestIdentity | null> {
+  private async discoverIdentity(
+    signal?: AbortSignal,
+  ): Promise<PullRequestIdentity | null> {
     this.retrievalCalls = 0;
     this.retrievalBytes = 0;
     this.retrievalStderrBytes = 0;
     this.retrievalStartedAt = Date.now();
-    const { base, head, branch } = await this.resolveRepositories();
-    const headSha = await this.git(["rev-parse", "HEAD"]);
+    const { base, head, branch } = await this.resolveRepositories(signal);
+    const headSha = await this.git(["rev-parse", "HEAD"], signal);
     const pulls: unknown[] = [];
     let pullPagesComplete = false;
     for (let page = 1; page <= 1_000; page += 1) {
-      const response = await this.ghJson([
-        `repos/${base.owner}/${base.name}/pulls?state=open&per_page=100&page=${page}`,
-      ]);
+      const response = await this.ghJson(
+        [
+          `repos/${base.owner}/${base.name}/pulls?state=open&per_page=100&page=${page}`,
+        ],
+        signal,
+      );
       if (!Array.isArray(response)) throw new Error("malformed_pull_response");
       pulls.push(...(response as unknown[]));
       if (response.length < 100) {
@@ -979,6 +994,7 @@ export class GitHubImportManager {
             timeoutMs: 10_000,
             stdoutLimit: 1_024,
             stderrLimit: 16_384,
+            signal,
           },
         );
         const reverse = await this.execute(
@@ -989,6 +1005,7 @@ export class GitHubImportManager {
             timeoutMs: 10_000,
             stdoutLimit: 1_024,
             stderrLimit: 16_384,
+            signal,
           },
         );
         if (forward.code !== 0 && reverse.code !== 0) continue;
@@ -1109,6 +1126,7 @@ export class GitHubImportManager {
   }
 
   async verifyForRead(): Promise<GitHubImportStatus> {
+    const proofState = await this.gitState().catch(() => null);
     try {
       if ((await this.readStore()).snapshots.length === 0) {
         this.activeIdentity = null;
@@ -1161,8 +1179,11 @@ export class GitHubImportManager {
         message: "GitHub pull request identity could not be proven safely.",
       };
     } finally {
-      this.readIdentityVerified = true;
-      this.verifiedGitState = await this.gitState().catch(() => null);
+      const currentState = await this.gitState().catch(() => null);
+      const verified = proofState !== null && currentState === proofState;
+      this.readIdentityVerified = verified;
+      this.verifiedGitState = verified ? proofState : null;
+      if (!verified) this.activeIdentity = null;
     }
   }
 
@@ -1687,7 +1708,7 @@ export class GitHubImportManager {
     try {
       if (signal?.aborted) throw new Error("cancelled");
       const provenGitState = await this.gitState();
-      const identity = await this.discoverIdentity();
+      const identity = await this.discoverIdentity(signal);
       if (!identity) throw new Error("no_pull_request");
       const proofTime = new Date().toISOString();
       const key = `${identity.base.normalized}#${identity.number}`;

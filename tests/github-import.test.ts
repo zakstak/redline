@@ -780,6 +780,108 @@ describe("GitHub import synchronization", () => {
     expect(retrievalSignal?.aborted).toBe(true);
   });
 
+  it("propagates cancellation while proving PR identity", async () => {
+    let discoverySignal: AbortSignal | undefined;
+    const executor: CommandExecutor = (command, args, options) => {
+      const joined = args.join(" ");
+      if (command === "git") {
+        if (joined === "remote")
+          return Promise.resolve({ stdout: "origin\n", stderr: "", code: 0 });
+        if (joined.includes("remote.origin.url"))
+          return Promise.resolve({
+            stdout: "https://github.com/base/project.git\n",
+            stderr: "",
+            code: 0,
+          });
+        if (joined.includes("remote.origin.pushurl"))
+          return Promise.resolve({ stdout: "", stderr: "", code: 1 });
+        if (joined.includes("branch.feature.remote"))
+          return Promise.resolve({ stdout: "origin\n", stderr: "", code: 0 });
+        if (
+          joined.includes("branch.feature.pushRemote") ||
+          joined.includes("remote.pushDefault")
+        )
+          return Promise.resolve({ stdout: "", stderr: "", code: 1 });
+        if (joined === "branch --show-current")
+          return Promise.resolve({ stdout: "feature\n", stderr: "", code: 0 });
+        if (joined === "rev-parse HEAD")
+          return Promise.resolve({
+            stdout: `${"a".repeat(40)}\n`,
+            stderr: "",
+            code: 0,
+          });
+      }
+      if (command === "gh") {
+        discoverySignal = options.signal;
+        return new Promise((resolve) => {
+          options.signal?.addEventListener(
+            "abort",
+            () => resolve({ stdout: "", stderr: "cancelled", code: 1 }),
+            { once: true },
+          );
+        });
+      }
+      return Promise.resolve({ stdout: "", stderr: "unexpected", code: 1 });
+    };
+    const importer = new GitHubImportManager(repository, gitDir, executor);
+    const internals = importer as unknown as {
+      discoverIdentity(signal: AbortSignal): Promise<unknown>;
+    };
+    const controller = new AbortController();
+    const discovery = internals.discoverIdentity(controller.signal);
+    await vi.waitFor(() => expect(discoverySignal).toBe(controller.signal));
+    controller.abort();
+    await expect(discovery).rejects.toThrow("cancelled");
+  });
+
+  it("does not cache a read proof across a git state change", async () => {
+    const importer = new GitHubImportManager(repository, gitDir);
+    let gitStateCalls = 0;
+    const internals = importer as unknown as {
+      readIdentityVerified: boolean;
+      verifiedGitState: string | null;
+      activeIdentity: string | null;
+      gitState(): Promise<string>;
+      readStore(): Promise<{
+        version: 1;
+        snapshots: Array<{ repository: string; pullRequest: number }>;
+        sources: Record<string, string>;
+      }>;
+      discoverIdentity(): Promise<{
+        base: { owner: string; name: string; normalized: string };
+        head: { owner: string; name: string; normalized: string };
+        number: number;
+        title: string;
+        headRefName: string;
+        headSha: string;
+        baseSha: string;
+      }>;
+    };
+    internals.gitState = () =>
+      Promise.resolve(gitStateCalls++ === 0 ? "old-state" : "new-state");
+    internals.readStore = () =>
+      Promise.resolve({
+        version: 1,
+        snapshots: [{ repository: "base/project", pullRequest: 1 }],
+        sources: {},
+      });
+    internals.discoverIdentity = () =>
+      Promise.resolve({
+        base: { owner: "base", name: "project", normalized: "base/project" },
+        head: { owner: "base", name: "project", normalized: "base/project" },
+        number: 1,
+        title: "Feature",
+        headRefName: "feature",
+        headSha: "a".repeat(40),
+        baseSha: "b".repeat(40),
+      });
+
+    await importer.verifyForRead();
+    expect(internals.readIdentityVerified).toBe(false);
+    expect(internals.verifiedGitState).toBeNull();
+    expect(internals.activeIdentity).toBeNull();
+  });
+
   it("evicts inactive snapshots to admit source text for the current PR", () => {
     const importer = new GitHubImportManager(repository, gitDir);
     type Snapshot = {

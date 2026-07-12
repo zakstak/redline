@@ -1404,17 +1404,20 @@ export class ReviewWorkspace {
       (candidate) => candidate.path !== path && candidate.originalPath === path,
     );
     const sourcePaths = [
-      ...(!pathIsReusedRenameSource ? [path] : []),
+      path,
       ...(file.originalPath ? [file.originalPath] : []),
     ];
     const manager = this.githubImportManager();
-    const imported = (await manager.hasCommentsForDiff(sourcePaths))
+    const importedCandidates = (await manager.hasCommentsForDiff(sourcePaths))
       ? await manager.commentsForDiff(
           response,
           await this.displayedContents(path, file.originalPath, file.kind),
           sourcePaths,
         )
       : [];
+    const imported = pathIsReusedRenameSource
+      ? importedCandidates.filter((comment) => comment.anchors.length > 0)
+      : importedCandidates;
     response.comments = [...comments, ...imported].sort(
       (left, right) =>
         left.createdAt.localeCompare(right.createdAt) ||
