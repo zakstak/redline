@@ -222,11 +222,6 @@ function git(
       args,
       {
         cwd: root,
-        env: Object.fromEntries(
-          Object.entries(process.env).filter(
-            ([key]) => !key.startsWith("GIT_"),
-          ),
-        ),
         encoding: "utf8",
         maxBuffer: 48 * 1024 * 1024,
         windowsHide: true,
