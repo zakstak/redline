@@ -585,6 +585,63 @@ test("renders persisted thread decisions and reply history", async ({
   await expect(history).toContainText("Implemented with regression coverage.");
 });
 
+test("reloads a replied thread as a tombstone after deletion", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let deleted = false;
+  const comment = {
+    id: "66666666-6666-4666-8666-666666666666",
+    path: "src/App.tsx",
+    anchors: [{ side: "new" as const, startLine: 1, endLine: 1 }],
+    body: "Original replied note",
+    createdAt: "2026-07-12T13:00:00.000Z",
+    fingerprint: "app-v2",
+    outdated: false,
+    state: "accepted" as const,
+    rootVersion: 1,
+    threadRevision: 1,
+    replies: [
+      {
+        id: "reply-delete",
+        actor: "agent" as const,
+        body: "Reply history remains visible.",
+        createdAt: "2026-07-12T13:05:00.000Z",
+        decision: "accepted" as const,
+      },
+    ],
+  };
+  await mockReviewApi(page, () => ({
+    ...diff,
+    comments: [
+      {
+        ...comment,
+        ...(deleted
+          ? {
+              body: "[deleted]",
+              deleted: true,
+              state: "deferred" as const,
+              rootVersion: 2,
+            }
+          : {}),
+      },
+    ],
+  }));
+  await page.route("**/api/comments/*", (route) => {
+    deleted = true;
+    return route.fulfill({ status: 204 });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Snapshot 2$/ }).click();
+  await page.getByRole("button", { name: "Delete note" }).click();
+  await page.clock.fastForward(7_100);
+  await expect(page.getByText("[deleted]", { exact: true })).toBeVisible();
+  await expect(page.getByText("Reply history remains visible.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Delete note" })).toHaveCount(
+    0,
+  );
+});
+
 test("teaches the first review action once and keeps shortcuts available", async ({
   page,
 }) => {

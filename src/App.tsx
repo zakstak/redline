@@ -2288,10 +2288,13 @@ export default function App() {
   const deferFile = async () => {
     if (!displayedDiff || activeFileDeferred) return;
     try {
-      const refreshed = await api<WorkspaceResponse>("/api/review/defer", {
-        method: "POST",
-        body: JSON.stringify({ path: displayedDiff.path }),
-      });
+      const refreshed = await api<WorkspaceResponse>(
+        `/api/review/defer?includeNoise=${includeNoiseRef.current}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ path: displayedDiff.path }),
+        },
+      );
       setWorkspace(refreshed);
       const next =
         refreshed.files.find((file) => file.reviewStatus !== "approved") ??
@@ -2311,10 +2314,13 @@ export default function App() {
 
   const restoreFile = async (path: string) => {
     try {
-      const refreshed = await api<WorkspaceResponse>("/api/review/restore", {
-        method: "POST",
-        body: JSON.stringify({ path }),
-      });
+      const refreshed = await api<WorkspaceResponse>(
+        `/api/review/restore?includeNoise=${includeNoiseRef.current}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ path }),
+        },
+      );
       setWorkspace(refreshed);
       setActivePath(path);
       setActionError("");
@@ -2455,8 +2461,10 @@ export default function App() {
         await api(`/api/comments/${encodeURIComponent(pending.comment.id)}`, {
           method: "DELETE",
         });
-        if (activeWorkspaceRootRef.current === pending.workspaceRoot)
+        if (activeWorkspaceRootRef.current === pending.workspaceRoot) {
           await loadWorkspace(true);
+          await loadDiff();
+        }
       } catch (error) {
         if (activeWorkspaceRootRef.current === pending.workspaceRoot) {
           setDiff((current) =>
@@ -2481,7 +2489,7 @@ export default function App() {
         );
       }
     },
-    [loadWorkspace],
+    [loadDiff, loadWorkspace],
   );
 
   const scheduleCommentDeletion = useCallback(

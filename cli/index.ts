@@ -103,6 +103,29 @@ function parseArgs(args: string[]): Parsed {
   return { mode, workspace, serverUrl, command, input, format, decision };
 }
 
+function validateCommandShape(parsed: Parsed) {
+  const command = parsed.command;
+  const valid =
+    (command.length === 1 && command[0] === "review") ||
+    (command.length === 2 && command[0] === "diff") ||
+    (command.length === 2 &&
+      command[0] === "comments" &&
+      (command[1] === "add" || command[1] === "export")) ||
+    (command.length === 2 &&
+      command[0] === "approve" &&
+      (command[1] === "files" || command[1] === "workspace")) ||
+    (command.length === 2 &&
+      command[0] === "agent" &&
+      command[1] === "review-all") ||
+    (command.length === 3 &&
+      command[0] === "agent" &&
+      (command[1] === "review" ||
+        command[1] === "respond" ||
+        command[1] === "reopen"));
+  if (!valid)
+    throw new CliError(2, "Unknown or incomplete command.", "invocation");
+}
+
 export function validateServerUrl(value: string): URL {
   let url: URL;
   try {
@@ -533,6 +556,7 @@ export async function run(args = process.argv.slice(2)) {
   }
   try {
     const parsed = parseArgs(args);
+    validateCommandShape(parsed);
     if (
       parsed.format === "markdown" &&
       !(parsed.command[0] === "comments" && parsed.command[1] === "export")

@@ -1441,10 +1441,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post("/api/review/defer", async (request, reply) => {
     const body = request.body as { path?: unknown };
+    const query = request.query as { includeNoise?: string };
     if (typeof body?.path !== "string")
       return sendError(reply, new Error("Choose a changed file to defer."));
     try {
-      return await workspace.deferFile(body.path);
+      return await workspace.deferFile(
+        body.path,
+        query.includeNoise === "true",
+      );
     } catch (error) {
       return sendError(reply, error, 409);
     }
@@ -1452,10 +1456,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post("/api/review/restore", async (request, reply) => {
     const body = request.body as { path?: unknown };
+    const query = request.query as { includeNoise?: string };
     if (typeof body?.path !== "string")
       return sendError(reply, new Error("Choose a deferred file to restore."));
     try {
-      return await workspace.restoreFile(body.path);
+      return await workspace.restoreFile(
+        body.path,
+        query.includeNoise === "true",
+      );
     } catch (error) {
       return sendError(reply, error);
     }

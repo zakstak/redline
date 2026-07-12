@@ -429,6 +429,34 @@ describe("local review snapshots", () => {
     migrated.close();
   });
 
+  it("finishes an interrupted v1 comment migration idempotently", async () => {
+    const stateDir = join(repository, ".git", "redline");
+    await mkdir(stateDir, { recursive: true });
+    const databasePath = join(stateDir, "review.sqlite");
+    const partial = new DatabaseSync(databasePath);
+    partial.exec(`
+      CREATE TABLE review_comments (
+        id TEXT PRIMARY KEY, path TEXT NOT NULL, anchors_json TEXT NOT NULL,
+        body TEXT NOT NULL, created_at TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending', root_version INTEGER NOT NULL DEFAULT 1
+      ) STRICT;
+      CREATE TABLE review_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+      INSERT INTO review_comments VALUES ('partial', 'example.ts', '[]', 'Still here', 'now', 'fp', 'pending', 1);
+      PRAGMA user_version = 1;
+    `);
+    partial.close();
+    const migrated = new ReviewDatabase(databasePath);
+    expect(migrated.allComments()[0]).toMatchObject({
+      id: "partial",
+      body: "Still here",
+      threadRevision: 0,
+    });
+    migrated.close();
+    const reopened = new ReviewDatabase(databasePath);
+    expect(reopened.allComments()).toHaveLength(1);
+    reopened.close();
+  });
+
   it("rejects ghost replies and returns the original durable idempotent response", async () => {
     const workspace = new ReviewWorkspace(repository);
     await workspace.initialize();
@@ -976,6 +1004,35 @@ describe("local review snapshots", () => {
 
     const withNoise = await workspace.getWorkspace(true);
     expect(withNoise.files).toHaveLength(3);
+    const deferredNoise = await workspace.deferFile("bundle.min.js", true);
+    expect(deferredNoise.deferredFiles.map((file) => file.path)).toContain(
+      "bundle.min.js",
+    );
+    const restoredNoise = await workspace.restoreFile("bundle.min.js", true);
+    expect(restoredNoise.files.map((file) => file.path)).toContain(
+      "bundle.min.js",
+    );
+    workspace.close();
+  });
+
+  it("recovers a stale review-state lock owned by a dead process", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    await workspace.initialize();
+    const lockPath = join(repository, ".git", "redline", "state.json.lock");
+    await mkdir(lockPath, { recursive: true });
+    await writeFile(
+      join(lockPath, "owner.json"),
+      JSON.stringify({
+        pid: 2_147_483_647,
+        createdAt: Date.now() - 60_000,
+      }),
+    );
+    const deferred = await workspace.deferFile("example.ts");
+    expect(deferred.deferredFiles[0]?.path).toBe("example.ts");
+    await expect(
+      readFile(join(lockPath, "owner.json"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    workspace.close();
   });
 
   it("rejects comments when the viewed fingerprint or anchors are stale", async () => {

@@ -42,6 +42,26 @@ describe("redline CLI", () => {
     expect(validateServerUrl(value).protocol).toBe("http:");
   });
 
+  it("rejects malformed server commands before offline discovery", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("offline"));
+    expect(
+      await run([
+        "--mode",
+        "server",
+        "--workspace",
+        repository,
+        "approve",
+        "workspace",
+        "typo",
+      ]),
+    ).toBe(2);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it.each([
     "https://127.0.0.1",
     "http://0.0.0.0",
@@ -283,7 +303,7 @@ describe("redline CLI", () => {
         "unexpected",
       ]),
     ).toBe(2);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it.each([

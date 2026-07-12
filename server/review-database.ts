@@ -103,14 +103,41 @@ export class ReviewDatabase {
       }
     ).user_version;
     if (schemaVersion === 1) {
-      this.database.exec(`
-        BEGIN IMMEDIATE;
-        ALTER TABLE review_comments ADD COLUMN state TEXT NOT NULL DEFAULT 'pending';
-        ALTER TABLE review_comments ADD COLUMN root_version INTEGER NOT NULL DEFAULT 1;
-        ALTER TABLE review_comments ADD COLUMN thread_revision INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE review_comments ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
-        COMMIT;
-      `);
+      const columns = new Set(
+        (
+          this.database
+            .prepare("PRAGMA table_info(review_comments)")
+            .all() as Array<{ name: string }>
+        ).map((column) => column.name),
+      );
+      const additions = [
+        [
+          "state",
+          "ALTER TABLE review_comments ADD COLUMN state TEXT NOT NULL DEFAULT 'pending'",
+        ],
+        [
+          "root_version",
+          "ALTER TABLE review_comments ADD COLUMN root_version INTEGER NOT NULL DEFAULT 1",
+        ],
+        [
+          "thread_revision",
+          "ALTER TABLE review_comments ADD COLUMN thread_revision INTEGER NOT NULL DEFAULT 0",
+        ],
+        [
+          "deleted",
+          "ALTER TABLE review_comments ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+        ],
+      ] as const;
+      this.database.exec("BEGIN IMMEDIATE");
+      try {
+        for (const [column, statement] of additions) {
+          if (!columns.has(column)) this.database.exec(statement);
+        }
+        this.database.exec("PRAGMA user_version = 2; COMMIT");
+      } catch (error) {
+        this.database.exec("ROLLBACK");
+        throw error;
+      }
     }
     this.database.exec(`
       PRAGMA journal_mode = WAL;

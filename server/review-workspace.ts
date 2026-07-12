@@ -772,9 +772,18 @@ export class ReviewWorkspace {
 
   private async withStoreLock<T>(operation: () => Promise<T>): Promise<T> {
     const lockPath = `${this.storePath()}.lock`;
+    const ownerPath = resolve(lockPath, "owner.json");
     for (let attempt = 0; attempt < 100; attempt += 1) {
       try {
         await mkdir(lockPath, { mode: 0o700 });
+        await writeFile(
+          ownerPath,
+          JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+          {
+            encoding: "utf8",
+            mode: 0o600,
+          },
+        );
         try {
           return await operation();
         } finally {
@@ -782,6 +791,35 @@ export class ReviewWorkspace {
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        try {
+          const owner = JSON.parse(await readFile(ownerPath, "utf8")) as {
+            pid?: unknown;
+            createdAt?: unknown;
+          };
+          const age = Date.now() - Number(owner.createdAt ?? 0);
+          let alive = true;
+          if (
+            typeof owner.pid === "number" &&
+            Number.isSafeInteger(owner.pid)
+          ) {
+            try {
+              process.kill(owner.pid, 0);
+            } catch (cause) {
+              alive = (cause as NodeJS.ErrnoException).code === "EPERM";
+            }
+          }
+          if (!alive && age > 2_000) {
+            await rm(lockPath, { recursive: true, force: true });
+            continue;
+          }
+        } catch {
+          // An incomplete lock is only reclaimed after its owner had ample time to finish creating it.
+          const lock = await lstat(lockPath);
+          if (Date.now() - lock.mtimeMs > 30_000) {
+            await rm(lockPath, { recursive: true, force: true });
+            continue;
+          }
+        }
         await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
       }
     }
@@ -1312,7 +1350,10 @@ export class ReviewWorkspace {
     return { path, fingerprint: file.fingerprint, approvedAt };
   }
 
-  async deferFile(path: string): Promise<WorkspaceResponse> {
+  async deferFile(
+    path: string,
+    includeNoise = false,
+  ): Promise<WorkspaceResponse> {
     await this.ensureInitialized();
     const canonicalPath = assertCanonicalReviewPath(this.root, path);
     const generation = this.workspaceGeneration;
@@ -1342,11 +1383,14 @@ export class ReviewWorkspace {
           await this.writeStore(store);
         }
       });
-      return this.getWorkspaceOnce(false);
+      return this.getWorkspaceOnce(includeNoise);
     });
   }
 
-  async restoreFile(path: string): Promise<WorkspaceResponse> {
+  async restoreFile(
+    path: string,
+    includeNoise = false,
+  ): Promise<WorkspaceResponse> {
     await this.ensureInitialized();
     const canonicalPath = assertCanonicalReviewPath(this.root, path);
     const generation = this.workspaceGeneration;
@@ -1366,7 +1410,7 @@ export class ReviewWorkspace {
           await this.writeStore(store);
         }
       });
-      return this.getWorkspaceOnce(false);
+      return this.getWorkspaceOnce(includeNoise);
     });
   }
 
