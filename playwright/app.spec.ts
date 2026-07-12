@@ -1126,6 +1126,22 @@ test("preserves an invalid draft when an earlier theme save is acknowledged", as
   await expect(input).toHaveValue("not-a-color");
 });
 
+test("clears an invalid theme draft when the workspace theme is reset", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByText("Customize semantic colors").click();
+  await page.getByLabel("on accent").fill("not-a-color");
+  await expect(page.getByRole("alert")).toContainText("Draft not applied");
+
+  await page.getByRole("button", { name: "Reset workspace theme" }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByText("Customize semantic colors").click();
+  await expect(page.getByLabel("on accent")).toHaveValue("#191a1f");
+});
+
 test("resets the acknowledged workspace theme and keeps recovery controls protected on a phone", async ({
   page,
 }) => {
@@ -1211,7 +1227,60 @@ test("discards a non-retryable rejected theme operation", async ({ page }) => {
     page.getByText("Theme was rejected by the server and was not saved."),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry save" })).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--canvas")
+          .trim(),
+      ),
+    )
+    .toBe("#191a1f");
   expect(attempts).toBe(1);
+});
+
+test("does not let a stale settings save overwrite a newer theme", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let releaseSettings: (() => void) | undefined;
+  let settingsStarted = false;
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    settingsStarted = true;
+    await new Promise<void>((resolve) => {
+      releaseSettings = resolve;
+    });
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 8,
+        keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page
+    .getByRole("group", { name: "Common context line values" })
+    .getByRole("button", { name: "8" })
+    .click();
+  await page.getByRole("button", { name: "Save settings" }).click();
+  await expect.poll(() => settingsStarted).toBe(true);
+  await page.getByRole("radio", { name: /Paper/ }).click();
+  await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
+  releaseSettings?.();
+  await expect(page.getByText("Saved for this workspace.")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--canvas")
+          .trim(),
+      ),
+    )
+    .toBe("#f4f2ee");
 });
 
 test("lets workspace reset supersede a debounced theme update", async ({

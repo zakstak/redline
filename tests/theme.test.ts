@@ -43,8 +43,14 @@ describe("theme contract", () => {
       ),
     );
     expect(checks).toContain("ink:paper");
+    expect(checks).toContain("accent:paper");
+    expect(checks).toContain("success:canvas");
+    expect(checks).toContain("warning:paper");
+    expect(checks).toContain("syntaxText:paper");
     expect(checks).toContain("syntaxText:added");
+    expect(checks).toContain("syntaxComment:addedStrong");
     expect(checks).toContain("syntaxKeyword:removed");
+    expect(checks).toContain("syntaxKeyword:removedStrong");
   });
 
   it("evaluates values immediately below, at, and above text and UI thresholds", () => {
@@ -85,10 +91,10 @@ describe("theme contract", () => {
     const custom = parseThemePreference({
       version: 1,
       preset: "redline",
-      overrides: { accent: "#8f2632" },
+      overrides: { paperDeep: "#303139" },
     });
     expect(custom).not.toBeNull();
-    expect(resolveTheme(custom!).accent).toBe("#8f2632");
+    expect(resolveTheme(custom!).paperDeep).toBe("#303139");
     expect(resolveTheme(DEFAULT_THEME_PREFERENCE)).toEqual(
       THEME_PRESETS.redline.colors,
     );

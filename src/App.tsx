@@ -908,6 +908,7 @@ export default function App() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [themeSaveState, setThemeSaveState] = useState<ThemeSaveState>("saved");
   const [themeUnsaved, setThemeUnsaved] = useState(false);
+  const [themeEditorRevision, setThemeEditorRevision] = useState(0);
   const [contextLines, setContextLines] = useState(settings.diffContextLines);
   const [diff, setDiff] = useState<DiffResponse | null>(null);
   const [diffWorkspaceRoot, setDiffWorkspaceRoot] = useState("");
@@ -970,6 +971,7 @@ export default function App() {
   const themeQueueRef = useRef<ThemeSaveOperation[]>([]);
   const themeMutationInFlightRef = useRef(false);
   const latestThemeIntentRef = useRef(0);
+  const persistedThemeRef = useRef<ThemePreference>(DEFAULT_THEME_PREFERENCE);
   const themeDebounceRef = useRef<number | null>(null);
   const flushThemeQueueRef = useRef<() => void>(() => undefined);
   activeWorkspaceRootRef.current = workspace?.root ?? "";
@@ -1038,6 +1040,7 @@ export default function App() {
         themeMutationInFlightRef.current ||
         themeQueueRef.current.length > 0;
       if (!themeSavePending) applyTheme(nextSettings.theme);
+      if (!themeSavePending) persistedThemeRef.current = nextSettings.theme;
       setSettings((current) => ({
         ...nextSettings,
         theme: themeSavePending ? current.theme : nextSettings.theme,
@@ -1092,6 +1095,8 @@ export default function App() {
               }),
             },
       );
+      if (activeWorkspaceRootRef.current === operation.workspaceRoot)
+        persistedThemeRef.current = updated.theme;
       if (
         activeWorkspaceRootRef.current === operation.workspaceRoot &&
         operation.revision === latestThemeIntentRef.current
@@ -1117,6 +1122,10 @@ export default function App() {
           setThemeSaveState("failed");
           setThemeUnsaved(true);
         } else {
+          const persistedTheme = persistedThemeRef.current;
+          applyTheme(persistedTheme);
+          setSettings((current) => ({ ...current, theme: persistedTheme }));
+          setThemeEditorRevision((current) => current + 1);
           setThemeSaveState("rejected");
           setThemeUnsaved(false);
         }
@@ -1169,6 +1178,7 @@ export default function App() {
     themeQueueRef.current.push({ kind: "reset", revision, workspaceRoot });
     applyTheme(DEFAULT_THEME_PREFERENCE);
     setSettings((current) => ({ ...current, theme: DEFAULT_THEME_PREFERENCE }));
+    setThemeEditorRevision((current) => current + 1);
     setThemeSaveState("saving");
     setThemeUnsaved(true);
     flushThemeQueueRef.current();
@@ -2156,11 +2166,12 @@ export default function App() {
   if (activePage === "settings") {
     return (
       <SettingsPage
+        key={`${workspace.root}:${themeEditorRevision}`}
         onBack={() => setActivePage("review")}
         onSaved={(updated) => {
           setSettings((current) => ({
             ...updated,
-            theme: themeUnsaved ? current.theme : updated.theme,
+            theme: current.theme,
           }));
           setContextLines(updated.diffContextLines);
         }}
