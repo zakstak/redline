@@ -1465,6 +1465,19 @@ export default function App() {
         setTypographyUnsaved(false);
         return;
       }
+      if (operation.source === "font") {
+        typographyQueueRef.current = null;
+        typographyPausedRef.current = false;
+        desiredTypographyRef.current = confirmedTypographyRef.current;
+        applyTypography(confirmedTypographyRef.current);
+        setSettings((current) => ({
+          ...current,
+          typography: confirmedTypographyRef.current,
+        }));
+        setTypographySaveState("failed");
+        setTypographyUnsaved(false);
+        return;
+      }
       typographyPausedRef.current = true;
       const latest = desiredTypographyRef.current;
       if (!typographyQueueRef.current)

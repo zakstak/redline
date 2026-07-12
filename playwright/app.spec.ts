@@ -1707,36 +1707,28 @@ test("rolls a rejected typography choice back without offering retry", async ({
   await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
 });
 
-test("keeps a newer queued font choice available when an earlier save fails", async ({
+test("restores a failed font save and allows switching workspaces", async ({
   page,
 }) => {
   await mockReviewApi(page);
   let attempts = 0;
   let releaseFailure: (() => void) | undefined;
-  let saved: ReviewSettings["typography"] | undefined;
   await page.route("**/api/settings/typography", async (route) => {
     attempts += 1;
-    if (attempts === 1) {
-      await new Promise<void>((resolve) => {
-        releaseFailure = resolve;
-      });
-      return route.fulfill({ status: 500, json: { message: "injected" } });
-    }
-    saved = (
-      route.request().postDataJSON() as {
-        preference: ReviewSettings["typography"];
-      }
-    ).preference;
-    return route.fulfill({
-      json: {
-        version: 1,
-        diffContextLines: 3,
-        keyboardLayout: "normie",
-        theme: DEFAULT_THEME_PREFERENCE,
-        typography: saved,
-      },
+    await new Promise<void>((resolve) => {
+      releaseFailure = resolve;
     });
+    return route.fulfill({ status: 500, json: { message: "injected" } });
   });
+  await page.route("**/api/workspace/open", (route) =>
+    route.fulfill({
+      json: {
+        ...changedWorkspace,
+        root: "/home/zack/git/another-workspace",
+        name: "another-workspace",
+      },
+    }),
+  );
   await page.goto("/");
   await page.locator(".settings-nav-button").click();
   await expect(
@@ -1756,13 +1748,17 @@ test("keeps a newer queued font choice available when an earlier save fails", as
     )
     .toContain("Trebuchet");
   releaseFailure?.();
-  await expect(page.getByRole("alert")).toContainText("unsaved");
-  await expect(page.getByLabel("Interface font")).toHaveValue("humanist");
-  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByRole("alert")).toContainText("was restored");
+  await expect(page.getByLabel("Interface font")).toHaveValue("system");
+  await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await page.getByRole("button", { name: "Change", exact: true }).click();
+  await page.getByLabel("Local path").fill("/home/zack/git/another-workspace");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
   await expect(
-    page.getByText("Typography saved for this workspace."),
+    page.getByText("another-workspace", { exact: true }),
   ).toBeVisible();
-  expect(saved?.uiFont).toBe("humanist");
+  expect(attempts).toBe(1);
 });
 
 test("autosaves typography normally after settings reload clears a failed font save", async ({
@@ -1790,7 +1786,7 @@ test("autosaves typography normally after settings reload clears a failed font s
   await page.goto("/");
   await page.locator(".settings-nav-button").click();
   await page.getByLabel("Interface font").selectOption("serif");
-  await expect(page.getByRole("alert")).toContainText("unsaved");
+  await expect(page.getByRole("alert")).toContainText("was restored");
   await page.reload();
   await page.locator(".settings-nav-button").click();
   await page.getByLabel("Interface font").selectOption("humanist");
