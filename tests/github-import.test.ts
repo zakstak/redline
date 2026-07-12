@@ -229,17 +229,26 @@ describe("GitHub import synchronization", () => {
     let abortOnSource: AbortController | null = null;
     let threadCalls = 0;
     const ghCalls: string[][] = [];
+    const gitCalls: string[] = [];
+    let remoteUrl = "https://github.com/base/project.git";
     const headSha = "a".repeat(40);
     const baseSha = "b".repeat(40);
     const executor: CommandExecutor = async (command, args) => {
       await Promise.resolve();
       if (command === "git") {
         const joined = args.join(" ");
+        gitCalls.push(joined);
         if (joined === "remote")
           return { stdout: "origin\n", stderr: "", code: 0 };
         if (joined.includes("remote.origin.url"))
           return {
-            stdout: "https://github.com/base/project.git\n",
+            stdout: `${remoteUrl}\n`,
+            stderr: "",
+            code: 0,
+          };
+        if (joined.includes("--get-regexp"))
+          return {
+            stdout: `remote.origin.url\n${remoteUrl}\0`,
             stderr: "",
             code: 0,
           };
@@ -261,6 +270,8 @@ describe("GitHub import synchronization", () => {
         if (joined === `show ${headSha}:src/example.ts`) abortOnSource?.abort();
         if (joined === `show ${headSha}:src/example.ts`)
           return { stdout: "before\nupdated\nafter\n", stderr: "", code: 0 };
+        if (joined === `show ${baseSha}:src/deleted.ts`)
+          return { stdout: "deleted\n", stderr: "", code: 0 };
       }
       if (command === "gh") {
         ghCalls.push(args);
@@ -337,6 +348,31 @@ describe("GitHub import synchronization", () => {
                                 name: "Reply User",
                                 avatarUrl: null,
                               },
+                              commit: { oid: headSha },
+                            },
+                          ],
+                        },
+                      },
+                      {
+                        id: "deleted-thread",
+                        isResolved: false,
+                        isOutdated: false,
+                        subjectType: "LINE",
+                        path: "src/deleted.ts",
+                        line: 1,
+                        startLine: 1,
+                        diffSide: "LEFT",
+                        comments: {
+                          pageInfo: { hasNextPage: false, endCursor: null },
+                          nodes: [
+                            {
+                              id: "deleted-root",
+                              body: "Keep this deletion in view.",
+                              createdAt: "2026-07-11T10:00:00.000Z",
+                              updatedAt: "2026-07-11T10:00:00.000Z",
+                              url: "https://github.com/base/project/pull/17#discussion_deleted",
+                              state: "SUBMITTED",
+                              author: null,
                               commit: { oid: headSha },
                             },
                           ],
@@ -420,6 +456,8 @@ describe("GitHub import synchronization", () => {
     expect(first).toEqual(second);
     expect(first).toMatchObject({ state: "available", retained: true });
     expect(threadCalls).toBe(1);
+    expect(gitCalls).toContain(`show ${baseSha}:src/deleted.ts`);
+    expect(gitCalls).not.toContain(`show ${headSha}:src/deleted.ts`);
     expect(ghCalls.length).toBeGreaterThan(0);
     expect(
       ghCalls.every(
@@ -451,6 +489,21 @@ describe("GitHub import synchronization", () => {
       github: { originalPath: "src/example.ts", mapping: "mapped" },
     });
     expect(await importer.hasCommentsForDiff(["src/unrelated.ts"])).toBe(false);
+
+    remoteUrl = "https://github.com/other/project.git";
+    expect(
+      await importer.commentsForDiff(diff, {
+        old: "before\nafter\n",
+        new: "before\nupdated\nafter\n",
+      }),
+    ).toEqual([]);
+    remoteUrl = "https://github.com/base/project.git";
+    expect(
+      await importer.commentsForDiff(diff, {
+        old: "before\nafter\n",
+        new: "before\nupdated\nafter\n",
+      }),
+    ).toHaveLength(1);
 
     const retainedReader = new GitHubImportManager(
       repository,
@@ -500,10 +553,10 @@ describe("GitHub import synchronization", () => {
       sources: Record<string, string>;
       snapshots: Array<{ sourceIds: string[]; sources?: unknown }>;
     };
-    expect(Object.keys(storedShape.sources)).toHaveLength(1);
-    expect(storedShape.snapshots[0]?.sourceIds).toEqual([
-      Object.keys(storedShape.sources)[0],
-    ]);
+    expect(Object.keys(storedShape.sources)).toHaveLength(2);
+    expect(storedShape.snapshots[0]?.sourceIds).toEqual(
+      Object.keys(storedShape.sources).sort(),
+    );
     expect(storedShape.snapshots[0]).not.toHaveProperty("sources");
     graphQLError = true;
     expect(await importer.refresh()).toMatchObject({
@@ -591,6 +644,103 @@ describe("GitHub import synchronization", () => {
     await expect(second).resolves.toMatchObject({
       message: "Import complete.",
     });
+  });
+
+  it("evicts inactive snapshots to admit source text for the current PR", () => {
+    const importer = new GitHubImportManager(repository, gitDir);
+    type Snapshot = {
+      repository: string;
+      pullRequest: number;
+      title: string;
+      headRepository: string;
+      headRefName: string;
+      headSha: string;
+      baseSha: string;
+      activatedAt: string;
+      synchronizedAt: string;
+      threads: Array<{
+        id: string;
+        path: string;
+        resolved: boolean;
+        outdated: boolean;
+        coordinate: null;
+        alternateCoordinate: null;
+        sourceCommit: null;
+        sourceContentId: string | null;
+        comments: [];
+      }>;
+      sourceIds: string[];
+    };
+    type Store = {
+      version: 1;
+      snapshots: Snapshot[];
+      sources: Record<string, string>;
+    };
+    const sources: Record<string, string> = {};
+    const snapshots = Array.from({ length: 7 }, (_, index): Snapshot => {
+      const sourceId = `old-${index}`;
+      sources[sourceId] = "x".repeat(9 * 1024 * 1024);
+      return {
+        repository: `base/old-${index}`,
+        pullRequest: index + 1,
+        title: "Old",
+        headRepository: `base/old-${index}`,
+        headRefName: "feature",
+        headSha: "a".repeat(40),
+        baseSha: "b".repeat(40),
+        activatedAt: `2026-01-0${index + 1}T00:00:00.000Z`,
+        synchronizedAt: "2026-01-01T00:00:00.000Z",
+        threads: [],
+        sourceIds: [sourceId],
+      };
+    });
+    const incoming: Snapshot = {
+      repository: "base/current",
+      pullRequest: 99,
+      title: "Current",
+      headRepository: "base/current",
+      headRefName: "feature",
+      headSha: "c".repeat(40),
+      baseSha: "d".repeat(40),
+      activatedAt: "2026-07-12T00:00:00.000Z",
+      synchronizedAt: "2026-07-12T00:00:00.000Z",
+      threads: [
+        {
+          id: "thread",
+          path: "src/example.ts",
+          resolved: false,
+          outdated: false,
+          coordinate: null,
+          alternateCoordinate: null,
+          sourceCommit: null,
+          sourceContentId: "current-source",
+          comments: [],
+        },
+      ],
+      sourceIds: [],
+    };
+    const internals = importer as unknown as {
+      admitSnapshot(
+        store: Store,
+        snapshot: Snapshot,
+        optionalSources: Record<string, string>,
+      ): Store;
+    };
+
+    const admitted = internals.admitSnapshot(
+      { version: 1, snapshots, sources },
+      incoming,
+      { "current-source": "y".repeat(2 * 1024 * 1024) },
+    );
+    expect(admitted.snapshots).toHaveLength(7);
+    expect(
+      admitted.snapshots.map((snapshot) => snapshot.repository),
+    ).not.toContain("base/old-0");
+    expect(
+      admitted.snapshots.find(
+        (snapshot) => snapshot.repository === "base/current",
+      )?.sourceIds,
+    ).toEqual(["current-source"]);
   });
 
   it("coalesces and validates same-origin avatar source data", async () => {

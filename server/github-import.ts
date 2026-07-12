@@ -703,13 +703,19 @@ export class GitHubImportManager {
   }
 
   private async gitState() {
-    const [head, branch] = await Promise.all([
+    const [head, branch, remotes] = await Promise.all([
       this.git(["rev-parse", "--verify", "HEAD"]).catch(() => "unborn"),
       this.git(["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(
         () => "detached",
       ),
+      this.git([
+        "config",
+        "--null",
+        "--get-regexp",
+        "^(remote\\..*\\.(url|pushurl)|branch\\..*\\.(remote|pushRemote)|remote\\.pushDefault)$",
+      ]).catch(() => ""),
     ]);
-    return `${branch}\0${head}`;
+    return `${branch}\0${head}\0${remotes}`;
   }
 
   private async ensureReadIdentity() {
@@ -1291,9 +1297,12 @@ export class GitHubImportManager {
         const originalCommit = (
           root.originalCommit as Record<string, unknown> | undefined
         )?.oid;
-        const commitCandidate = node.isOutdated
-          ? (originalCommit ?? currentCommit)
-          : (currentCommit ?? originalCommit);
+        const commitCandidate =
+          coordinates.coordinate.side === "old"
+            ? identity.baseSha
+            : node.isOutdated
+              ? (originalCommit ?? currentCommit)
+              : (currentCommit ?? originalCommit);
         const commit =
           typeof commitCandidate === "string" &&
           /^[0-9a-f]{40}$/i.test(commitCandidate)
@@ -1526,6 +1535,19 @@ export class GitHubImportManager {
       sources[id] = content;
       incoming.sourceIds.push(id);
       incoming.sourceIds.sort();
+      while (
+        sourceUsage(snapshots) > MAX_SOURCE_BYTES ||
+        total(snapshots) > MAX_TOTAL_BYTES
+      ) {
+        const removable = snapshots.findIndex(
+          (snapshot) =>
+            `${snapshot.repository}#${snapshot.pullRequest}` !== key &&
+            `${snapshot.repository}#${snapshot.pullRequest}` !==
+              this.activeIdentity,
+        );
+        if (removable < 0) break;
+        snapshots.splice(removable, 1);
+      }
       if (
         snapshotCoreBytes(incoming) + sourceBytes(incoming.sourceIds, sources) >
           MAX_PR_BYTES ||
