@@ -68,6 +68,44 @@ const approvedWorkspace: WorkspaceResponse = {
   },
 };
 
+const longFilePath =
+  "src/features/review/workspace/components/very-long-directory-name/ReviewWorkspacePaneWithAnIntentionallyLongName.ts";
+
+const layoutWorkspace: WorkspaceResponse = {
+  ...changedWorkspace,
+  name: "review-automation-with-a-deliberately-long-workspace-name",
+  files: [
+    ...changedWorkspace.files,
+    {
+      path: longFilePath,
+      name: "ReviewWorkspacePaneWithAnIntentionallyLongName.ts",
+      directory:
+        "src/features/review/workspace/components/very-long-directory-name",
+      statusCode: " M",
+      kind: "modified",
+      fingerprint: "long-path-v1",
+      reviewStatus: "unreviewed",
+      binary: false,
+      generated: false,
+      commentCount: 0,
+    },
+  ],
+  counts: { total: 3, needsReview: 3, approved: 0, changed: 1, comments: 0 },
+};
+
+const generatedNoiseFile = {
+  path: "generated.min.js",
+  name: "generated.min.js",
+  directory: "",
+  statusCode: "??",
+  kind: "untracked" as const,
+  fingerprint: "generated-v1",
+  reviewStatus: "unreviewed" as const,
+  binary: false,
+  generated: true,
+  commentCount: 0,
+};
+
 const diff: DiffResponse = {
   schemaVersion: 1,
   path: "src/App.tsx",
@@ -135,6 +173,7 @@ async function mockReviewApi(
   page: Page,
   diffPayload: DiffPayload = diff,
   diffRequests: string[] = [],
+  workspacePayload: WorkspaceResponse = changedWorkspace,
 ) {
   let settings: ReviewSettings = {
     version: 1,
@@ -143,9 +182,24 @@ async function mockReviewApi(
     theme: DEFAULT_THEME_PREFERENCE,
     typography: DEFAULT_TYPOGRAPHY_PREFERENCE,
   };
-  await page.route("**/api/workspace?*", (route) =>
-    route.fulfill({ json: changedWorkspace }),
-  );
+  await page.route("**/api/workspace?*", (route) => {
+    const includeNoise =
+      new URL(route.request().url()).searchParams.get("includeNoise") ===
+      "true";
+    const json = includeNoise
+      ? {
+          ...workspacePayload,
+          files: [...workspacePayload.files, generatedNoiseFile],
+          hiddenNoiseCount: 0,
+          counts: {
+            ...workspacePayload.counts,
+            total: workspacePayload.counts.total + 1,
+            needsReview: workspacePayload.counts.needsReview + 1,
+          },
+        }
+      : workspacePayload;
+    return route.fulfill({ json });
+  });
   await page.route("**/api/diff?*", async (route) => {
     diffRequests.push(route.request().url());
     const payload =
@@ -209,7 +263,7 @@ async function mockReviewApi(
     route.fulfill({
       json: {
         approvedAt: "2026-07-09T13:00:00.000Z",
-        approvals: changedWorkspace.files.map((file) => ({
+        approvals: workspacePayload.files.map((file) => ({
           path: file.path,
           fingerprint: file.fingerprint,
           approvedAt: "2026-07-09T13:00:00.000Z",
@@ -500,7 +554,7 @@ test("teaches the first review action once and keeps shortcuts available", async
     page.getByText("Select line numbers to leave a note."),
   ).toHaveCount(0);
 
-  await page.getByText("Keyboard shortcuts").click();
+  await page.getByText("Shortcuts", { exact: true }).click();
   await expect(page.getByText("Go to a visible line")).toBeVisible();
 });
 
@@ -897,6 +951,289 @@ test("keeps stale comments as history without attaching them to current lines", 
   ).toBeVisible();
   await expect(page.locator(".line-comment-count")).toHaveCount(0);
 });
+
+const layoutMatrix = [
+  { width: 1440, height: 900, maxRailWidth: 216, overlay: false },
+  { width: 900, height: 700, maxRailWidth: 208, overlay: false },
+  { width: 768, height: 900, maxRailWidth: 240, overlay: true },
+  { width: 720, height: 450, maxRailWidth: 240, overlay: true },
+] as const;
+
+for (const matrixCase of layoutMatrix) {
+  test(`contains the compact file rail at ${matrixCase.width}x${matrixCase.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(matrixCase);
+    await mockReviewApi(page, diff, [], layoutWorkspace);
+    await page.goto("/");
+    if (matrixCase.overlay)
+      await page
+        .getByRole("button", { name: "Open changed files panel" })
+        .click();
+
+    const rail = page.getByLabel("Changed files", { exact: true });
+    const [railBox, headerBox, footerBox, searchBox, diffBox] =
+      await Promise.all([
+        rail.boundingBox(),
+        page.locator(".workspace-identity").boundingBox(),
+        page.locator(".rail-footer").boundingBox(),
+        page.getByPlaceholder("Filter files").boundingBox(),
+        page.locator(".diff-workspace").boundingBox(),
+      ]);
+
+    expect(railBox?.width).toBeLessThanOrEqual(matrixCase.maxRailWidth);
+    expect(headerBox?.height).toBeLessThanOrEqual(76);
+    expect(footerBox?.height).toBeLessThanOrEqual(92);
+    expect(
+      await rail.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth,
+      ),
+    ).toBe(true);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBe(matrixCase.width);
+    expect(
+      railBox &&
+        searchBox &&
+        searchBox.x >= railBox.x &&
+        searchBox.x + searchBox.width <= railBox.x + railBox.width,
+    ).toBe(true);
+    if (matrixCase.overlay) {
+      expect(
+        await page
+          .locator(".diff-workspace")
+          .evaluate((element) => (element as HTMLElement).inert),
+      ).toBe(true);
+    } else {
+      expect(railBox && diffBox && diffBox.x >= railBox.x + railBox.width).toBe(
+        true,
+      );
+    }
+
+    if (matrixCase.height === 450) {
+      await page.getByText("Shortcuts", { exact: true }).click();
+      const shortcutsBox = await page
+        .getByLabel("Keyboard shortcuts")
+        .boundingBox();
+      expect(
+        railBox &&
+          shortcutsBox &&
+          shortcutsBox.x >= railBox.x &&
+          shortcutsBox.x + shortcutsBox.width <= railBox.x + railBox.width &&
+          shortcutsBox.y >= 0 &&
+          shortcutsBox.y + shortcutsBox.height <= matrixCase.height,
+      ).toBe(true);
+      expect(
+        (await page.locator(".rail-footer").boundingBox())?.height,
+      ).toBeLessThanOrEqual(92);
+    }
+  });
+}
+
+test("discloses a complete long path on keyboard focus without widening the rail", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await mockReviewApi(page, diff, [], layoutWorkspace);
+  await page.goto("/");
+
+  const longRow = page.getByRole("button", {
+    name: new RegExp(longFilePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+  });
+  await expect(longRow).toBeVisible();
+  expect(await longRow.getAttribute("aria-label")).toContain(longFilePath);
+  const railWidth = await page
+    .getByLabel("Changed files", { exact: true })
+    .evaluate((element) => element.clientWidth);
+  expect(await longRow.evaluate((element) => element.clientWidth)).toBeLessThan(
+    railWidth,
+  );
+
+  await longRow.focus();
+  await expect(longRow.locator(".file-focus-path")).toHaveText(longFilePath);
+  await expect(longRow.locator(".file-focus-path")).toBeVisible();
+
+  await page.keyboard.press("f");
+  await page.getByPlaceholder("Filter files").fill("styles");
+  await expect(page.getByRole("button", { name: /styles\.css/ })).toBeVisible();
+  await page.getByPlaceholder("Filter files").fill("");
+  await longRow.focus();
+  await page.keyboard.press("j");
+  await expect(
+    page.getByRole("button", { name: /styles\.css/ }),
+  ).toHaveAttribute("aria-current", "true");
+});
+
+test("keeps review-noise visibility session-only in Settings and restores trigger focus", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 768, height: 900 });
+  const workspaceRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/workspace?"))
+      workspaceRequests.push(request.url());
+  });
+  await mockReviewApi(page, diff, [], layoutWorkspace);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open changed files panel" }).click();
+  await page.locator(".settings-nav-button").click();
+
+  const noiseToggle = page.getByRole("checkbox", { name: /Show review noise/ });
+  await expect(noiseToggle).not.toBeChecked();
+  await noiseToggle.check();
+  await expect
+    .poll(() =>
+      workspaceRequests.some((url) => url.includes("includeNoise=true")),
+    )
+    .toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-nav-button")).toBeFocused();
+  await expect(
+    page.getByRole("button", { name: /generated\.min\.js/ }),
+  ).toBeVisible();
+
+  await page.locator(".settings-nav-button").click();
+  await expect(noiseToggle).toBeChecked();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(
+    768,
+  );
+  expect(
+    await page
+      .locator(".settings-shell")
+      .evaluate((element) => element.scrollHeight > element.clientHeight),
+  ).toBe(true);
+  const saveButton = page.getByRole("button", { name: "Save settings" });
+  await saveButton.scrollIntoViewIfNeeded();
+  const saveBox = await saveButton.boundingBox();
+  expect(saveBox && saveBox.y >= 0 && saveBox.y + saveBox.height <= 900).toBe(
+    true,
+  );
+  await page.keyboard.press("Escape");
+  await page.reload();
+  await page.getByRole("button", { name: "Open changed files panel" }).click();
+  await page.locator(".settings-nav-button").click();
+  await expect(
+    page.getByRole("checkbox", { name: /Show review noise/ }),
+  ).not.toBeChecked();
+});
+
+test("preserves a retryable typography change when review noise is toggled", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let settingsReads = 0;
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() === "GET") settingsReads += 1;
+    return route.fallback();
+  });
+  await page.route("**/api/settings/typography", (route) =>
+    route.fulfill({ status: 500, json: { message: "injected" } }),
+  );
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("button", { name: "Decrease code text size" }).click();
+  await expect(page.getByRole("alert")).toContainText("unsaved");
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("15 px");
+
+  await page.getByRole("checkbox", { name: /Show review noise/ }).check();
+
+  await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("15 px");
+  expect(settingsReads).toBe(1);
+});
+
+test("includes each file's nonzero comment count in its accessible name", async ({
+  page,
+}) => {
+  const workspaceWithComments: WorkspaceResponse = {
+    ...changedWorkspace,
+    files: changedWorkspace.files.map((file, index) =>
+      index === 0 ? { ...file, commentCount: 2 } : file,
+    ),
+    counts: { ...changedWorkspace.counts, comments: 2 },
+  };
+  await mockReviewApi(page, diff, [], workspaceWithComments);
+  await page.goto("/");
+
+  await expect(
+    page.getByRole("button", { name: /src\/App\.tsx.*2 comments/ }),
+  ).toBeVisible();
+});
+
+for (const contextCase of [
+  { width: 1440, height: 900, layout: "split" },
+  { width: 720, height: 450, layout: "unified" },
+  { width: 360, height: 700, layout: "unified" },
+] as const) {
+  test(`keeps the ${contextCase.layout} context control unobscured at ${contextCase.width}x${contextCase.height}`, async ({
+    page,
+  }) => {
+    const diffRequests: string[] = [];
+    await page.setViewportSize(contextCase);
+    await mockReviewApi(page, diff, diffRequests, layoutWorkspace);
+    await page.goto("/");
+    const expectedRegion =
+      contextCase.layout === "split" ? "Side by side diff" : "Unified diff";
+    await expect(
+      page.getByRole("region", { name: expectedRegion }),
+    ).toBeVisible();
+    const hunk = page.locator(".diff-hunk-line").first();
+    const label = hunk.locator(":scope > span");
+    const control = page
+      .getByRole("button", { name: "Show more context" })
+      .first();
+    const scroller = page.locator(".diff-scroll");
+    const [hunkBox, labelBox, controlBox, scrollerBox] = await Promise.all([
+      hunk.boundingBox(),
+      label.boundingBox(),
+      control.boundingBox(),
+      scroller.boundingBox(),
+    ]);
+    expect(
+      hunkBox &&
+        controlBox &&
+        controlBox.y >= hunkBox.y &&
+        controlBox.y + controlBox.height <= hunkBox.y + hunkBox.height,
+    ).toBe(true);
+    expect(
+      labelBox && controlBox && labelBox.x + labelBox.width <= controlBox.x,
+    ).toBe(true);
+    expect(
+      scrollerBox &&
+        controlBox &&
+        controlBox.x >= scrollerBox.x &&
+        controlBox.x + controlBox.width <= scrollerBox.x + scrollerBox.width,
+    ).toBe(true);
+
+    if (contextCase.width <= 720) {
+      await scroller.evaluate((element) => {
+        element.scrollLeft = element.scrollWidth;
+      });
+      const [scrolledControlBox, scrolledScrollerBox] = await Promise.all([
+        control.boundingBox(),
+        scroller.boundingBox(),
+      ]);
+      expect(
+        scrolledControlBox &&
+          scrolledScrollerBox &&
+          scrolledControlBox.x >= scrolledScrollerBox.x &&
+          scrolledControlBox.x + scrolledControlBox.width <=
+            scrolledScrollerBox.x + scrolledScrollerBox.width,
+      ).toBe(true);
+    }
+
+    await control.focus();
+    await expect(control).toBeFocused();
+    await control.click();
+    await expect
+      .poll(() => diffRequests.some((url) => url.includes("context=8")))
+      .toBe(true);
+  });
+}
 
 test("uses an overlay file drawer without clipping the tablet workspace", async ({
   page,
@@ -2002,5 +2339,49 @@ test.describe("phone touch layout", () => {
       .getByRole("button", { name: /Approve 2 visible files/ })
       .boundingBox();
     expect(batchBox?.height).toBeGreaterThanOrEqual(44);
+    for (const control of [
+      page.locator(".file-search"),
+      page.getByRole("button", { name: /src\/App\.tsx/ }),
+      page.locator(".settings-nav-button"),
+    ]) {
+      const box = await control.boundingBox();
+      expect(box?.height).toBeGreaterThanOrEqual(44);
+    }
+    expect(
+      await page
+        .getByLabel("Changed files", { exact: true })
+        .evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true);
+
+    await page.locator(".settings-nav-button").click();
+    for (let index = 0; index < 4; index += 1)
+      await page
+        .getByRole("button", { name: "Decrease code text size" })
+        .click();
+    await expect(
+      page.locator(".typography-size-control output").last(),
+    ).toContainText("12 px");
+    const noiseBox = await page
+      .getByRole("checkbox", { name: /Show review noise/ })
+      .locator("..")
+      .boundingBox();
+    expect(noiseBox?.height).toBeGreaterThanOrEqual(44);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBe(390);
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".settings-nav-button")).toBeFocused();
+    await page.keyboard.press("Escape");
+    const contextBox = await page
+      .getByRole("button", { name: "Show more context" })
+      .first()
+      .boundingBox();
+    expect(contextBox?.height).toBeGreaterThanOrEqual(44);
+    const hunkBox = await page.locator(".diff-hunk-line").first().boundingBox();
+    expect(hunkBox?.height).toBeGreaterThanOrEqual(44);
+    await expect(page.locator(".diff-view")).toHaveCSS(
+      "--diff-hunk-height",
+      "44px",
+    );
   });
 });

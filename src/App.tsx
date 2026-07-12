@@ -807,7 +807,9 @@ function TypographyEditor({
 
 function SettingsPage({
   themeEditorRevision,
+  includeNoise,
   onBack,
+  onIncludeNoiseChange,
   onSaved,
   onThemeChange,
   onThemeReset,
@@ -821,7 +823,9 @@ function SettingsPage({
   workspace,
 }: {
   themeEditorRevision: number;
+  includeNoise: boolean;
   onBack: () => void;
+  onIncludeNoiseChange: (include: boolean) => void;
   onSaved: (settings: ReviewSettings) => void;
   onThemeChange: (preference: ThemePreference) => void;
   onThemeReset: () => void;
@@ -966,6 +970,38 @@ function SettingsPage({
               <span>{validDraft ? parsedDraft : "–"}</span> unchanged lines
             </div>
           </div>
+        </section>
+
+        <section
+          className="settings-section settings-noise-section"
+          aria-labelledby="review-noise-heading"
+        >
+          <div className="settings-section-copy">
+            <h2 id="review-noise-heading">File-list visibility</h2>
+            <p id="review-noise-help">
+              Include generated and binary files in this browser tab. Redline
+              resets this view when the page reloads.
+            </p>
+          </div>
+          <label className="noise-toggle settings-noise-toggle">
+            <input
+              aria-describedby="review-noise-help"
+              checked={includeNoise}
+              onChange={(event) => onIncludeNoiseChange(event.target.checked)}
+              type="checkbox"
+            />
+            <span className="toggle-track">
+              <span />
+            </span>
+            <span>
+              Show review noise
+              <small>
+                {includeNoise
+                  ? "Generated and binary files are visible"
+                  : `${workspace.hiddenNoiseCount} generated or binary hidden`}
+              </small>
+            </span>
+          </label>
         </section>
 
         <section
@@ -1146,6 +1182,7 @@ export default function App() {
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
   const [watchState, setWatchState] = useState<WatchState>("connecting");
   const fileSearchRef = useRef<HTMLInputElement>(null);
+  const settingsNavRef = useRef<HTMLButtonElement>(null);
   const filePanelRef = useRef<HTMLElement>(null);
   const filePanelToggleRef = useRef<HTMLButtonElement>(null);
   const filePanelReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -1161,6 +1198,7 @@ export default function App() {
   const diffRequestRef = useRef(0);
   const workspaceRequestRef = useRef(0);
   const settingsRequestRef = useRef(0);
+  const includeNoiseRef = useRef(includeNoise);
   const workspaceOpenRef = useRef(false);
   const workspaceEpochRef = useRef(0);
   const reviewPanelRef = useRef<HTMLElement>(null);
@@ -1186,16 +1224,17 @@ export default function App() {
   const desiredTypographyRef = useRef(DEFAULT_TYPOGRAPHY_PREFERENCE);
   const flushTypographyQueueRef = useRef<() => void>(() => undefined);
   activeWorkspaceRootRef.current = workspace?.root ?? "";
+  includeNoiseRef.current = includeNoise;
 
   const loadWorkspace = useCallback(
-    async (silent = false) => {
+    async (silent = false, includeNoiseOverride?: boolean) => {
       if (workspaceOpenRef.current) return null;
       const requestId = ++workspaceRequestRef.current;
       if (silent) setRefreshing(true);
       else setLoadingWorkspace(true);
       try {
         const nextWorkspace = await api<WorkspaceResponse>(
-          `/api/workspace?includeNoise=${includeNoise}`,
+          `/api/workspace?includeNoise=${includeNoiseOverride ?? includeNoiseRef.current}`,
         );
         if (
           requestId !== workspaceRequestRef.current ||
@@ -1238,7 +1277,7 @@ export default function App() {
         }
       }
     },
-    [includeNoise],
+    [],
   );
 
   const loadSettings = useCallback(async () => {
@@ -1772,6 +1811,13 @@ export default function App() {
     [filePanelOpen],
   );
 
+  const closeSettings = useCallback(() => {
+    setActivePage("review");
+    window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() => settingsNavRef.current?.focus()),
+    );
+  }, []);
+
   const closeReviewPanel = useCallback((restoreFocus = true) => {
     setReviewPanelOpen(false);
     setPendingReviewFocus(null);
@@ -1844,12 +1890,13 @@ export default function App() {
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (activePage === "settings") {
-        if (target.matches('input, textarea, select, [contenteditable="true"]'))
-          return;
         if (event.key === "Escape") {
           event.preventDefault();
-          setActivePage("review");
+          closeSettings();
+          return;
         }
+        if (target.matches('input, textarea, select, [contenteditable="true"]'))
+          return;
         return;
       }
       if (event.key === "Escape") {
@@ -2056,6 +2103,7 @@ export default function App() {
   }, [
     activePage,
     closeFilePanel,
+    closeSettings,
     closeReviewPanel,
     diffSearch,
     displayedDiff,
@@ -2509,7 +2557,12 @@ export default function App() {
   if (activePage === "settings") {
     return (
       <SettingsPage
-        onBack={() => setActivePage("review")}
+        includeNoise={includeNoise}
+        onBack={closeSettings}
+        onIncludeNoiseChange={(nextIncludeNoise) => {
+          setIncludeNoise(nextIncludeNoise);
+          void loadWorkspace(true, nextIncludeNoise);
+        }}
         onSaved={(updated) => {
           setSettings((current) => ({
             ...updated,
@@ -2560,7 +2613,7 @@ export default function App() {
             <div className="workspace-title-row">
               <div>
                 <p className="rail-label">Workspace</p>
-                <h1>{workspace.name}</h1>
+                <h1 title={workspace.name}>{workspace.name}</h1>
               </div>
               <div className="workspace-title-actions">
                 <button
@@ -2662,6 +2715,7 @@ export default function App() {
               visibleFiles.map((file) => (
                 <div className="file-list-item" key={file.path} role="listitem">
                   <button
+                    aria-label={`${file.path}, ${statusLabel(file)}, ${changeLabel(file)}${file.commentCount > 0 ? `, ${file.commentCount} ${file.commentCount === 1 ? "comment" : "comments"}` : ""}`}
                     aria-current={activePath === file.path ? "true" : undefined}
                     className="file-row"
                     data-active={activePath === file.path}
@@ -2700,6 +2754,9 @@ export default function App() {
                           {file.commentCount}
                         </span>
                       ) : null}
+                    </span>
+                    <span aria-hidden="true" className="file-focus-path">
+                      {file.path}
                     </span>
                     <span className="visually-hidden">
                       {statusLabel(file)}, {changeLabel(file)}
@@ -2774,28 +2831,13 @@ export default function App() {
           ) : null}
 
           <div className="rail-footer">
-            <label className="noise-toggle">
-              <input
-                checked={includeNoise}
-                onChange={(event) => setIncludeNoise(event.target.checked)}
-                type="checkbox"
-              />
-              <span className="toggle-track">
-                <span />
-              </span>
-              <span>
-                Show review noise
-                <small>
-                  {workspace.hiddenNoiseCount} generated or binary hidden
-                </small>
-              </span>
-            </label>
             <button
               className="settings-nav-button"
               onClick={() => {
                 setReviewPanelOpen(false);
                 setActivePage("settings");
               }}
+              ref={settingsNavRef}
               type="button"
             >
               <SettingsIcon />
@@ -2805,69 +2847,71 @@ export default function App() {
                 {settings.diffContextLines} lines
               </small>
             </button>
-            <div className="workspace-watch-state" data-state={watchState}>
-              <span aria-hidden="true" />
-              {refreshing
-                ? "Refreshing changes"
-                : watchState === "live"
-                  ? "Watching files"
-                  : watchState === "polling"
-                    ? "Polling for changes"
-                    : "Connecting watcher"}
-            </div>
-            <details className="shortcut-guide">
-              <summary>Keyboard shortcuts</summary>
-              <div aria-label="Keyboard shortcuts">
-                {settings.keyboardLayout === "vim" ? (
-                  <>
-                    <span>
-                      <kbd>Enter</kbd> Navigate the diff
-                    </span>
-                    <span>
-                      <kbd>J</kbd>
-                      <kbd>K</kbd> Move files or diff lines
-                    </span>
-                    <span>
-                      <kbd>V</kbd> Select lines in diff mode
-                    </span>
-                    <span>
-                      <kbd>Ctrl+D</kbd>
-                      <kbd>Ctrl+U</kbd> Half-page
-                    </span>
-                    <span>
-                      <kbd>gg</kbd>
-                      <kbd>G</kbd> First or last line
-                    </span>
-                    <span>
-                      <kbd>C</kbd> Comment on selected lines
-                    </span>
-                    <span>
-                      <kbd>A</kbd> Approve in diff mode
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span>
-                      <kbd>J</kbd>
-                      <kbd>K</kbd> Next or previous file
-                    </span>
-                    <span>
-                      <kbd>C</kbd> Comment on selected lines
-                    </span>
-                  </>
-                )}
-                <span>
-                  <kbd>/</kbd> Search this diff
-                </span>
-                <span>
-                  <kbd>G</kbd> Go to a visible line
-                </span>
-                <span>
-                  <kbd>[</kbd>
-                  <kbd>]</kbd> Toggle side panels
-                </span>
+            <div className="rail-utilities">
+              <div className="workspace-watch-state" data-state={watchState}>
+                <span aria-hidden="true" />
+                {refreshing
+                  ? "Refreshing changes"
+                  : watchState === "live"
+                    ? "Watching files"
+                    : watchState === "polling"
+                      ? "Polling for changes"
+                      : "Connecting watcher"}
               </div>
-            </details>
+              <details className="shortcut-guide">
+                <summary>Shortcuts</summary>
+                <div aria-label="Keyboard shortcuts">
+                  {settings.keyboardLayout === "vim" ? (
+                    <>
+                      <span>
+                        <kbd>Enter</kbd> Navigate the diff
+                      </span>
+                      <span>
+                        <kbd>J</kbd>
+                        <kbd>K</kbd> Move files or diff lines
+                      </span>
+                      <span>
+                        <kbd>V</kbd> Select lines in diff mode
+                      </span>
+                      <span>
+                        <kbd>Ctrl+D</kbd>
+                        <kbd>Ctrl+U</kbd> Half-page
+                      </span>
+                      <span>
+                        <kbd>gg</kbd>
+                        <kbd>G</kbd> First or last line
+                      </span>
+                      <span>
+                        <kbd>C</kbd> Comment on selected lines
+                      </span>
+                      <span>
+                        <kbd>A</kbd> Approve in diff mode
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span>
+                        <kbd>J</kbd>
+                        <kbd>K</kbd> Next or previous file
+                      </span>
+                      <span>
+                        <kbd>C</kbd> Comment on selected lines
+                      </span>
+                    </>
+                  )}
+                  <span>
+                    <kbd>/</kbd> Search this diff
+                  </span>
+                  <span>
+                    <kbd>G</kbd> Go to a visible line
+                  </span>
+                  <span>
+                    <kbd>[</kbd>
+                    <kbd>]</kbd> Toggle side panels
+                  </span>
+                </div>
+              </details>
+            </div>
           </div>
         </aside>
 
