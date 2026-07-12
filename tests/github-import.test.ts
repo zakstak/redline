@@ -196,6 +196,26 @@ describe("GitHub import primitives", () => {
       ].join("\n"),
     );
   });
+
+  it("removes unsafe reference-style link and image destinations", () => {
+    expect(
+      sanitizeGitHubMarkdown(
+        [
+          "[safe-looking][unsafe] ![pixel][image] [ok][safe]",
+          "[unsafe]: javascript:alert(1)",
+          "[image]: data:image/svg+xml,evil",
+          '[safe]: https://example.com/path "title"',
+        ].join("\n"),
+      ),
+    ).toBe(
+      [
+        "[safe-looking][unsafe] ![pixel][image] [ok][safe]",
+        "",
+        "",
+        '[safe]: https://example.com/path "title"',
+      ].join("\n"),
+    );
+  });
 });
 
 describe("GitHub import synchronization", () => {

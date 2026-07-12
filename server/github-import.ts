@@ -293,6 +293,13 @@ export function sanitizeGitHubMarkdown(value: string) {
         return line;
       }
       if (fenced) return line;
+      const reference = line.match(/^\s{0,3}\[([^\]]+)\]:\s*(\S+)(.*)$/);
+      if (reference) {
+        const [, label = "", destination = "", suffix = ""] = reference;
+        return safeMarkdownDestination(destination)
+          ? `[${label}]: ${destination}${suffix}`
+          : "";
+      }
       return line
         .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
         .replace(
@@ -590,6 +597,8 @@ export class GitHubImportManager {
   private refreshPromise: Promise<GitHubImportStatus> | null = null;
   private discoveryPromise: Promise<GitHubImportStatus> | null = null;
   private readIdentityVerified = false;
+  private verifiedGitState: string | null = null;
+  private storeMutation = Promise.resolve();
   private retrievalCalls = 0;
   private retrievalBytes = 0;
   private retrievalStderrBytes = 0;
@@ -658,6 +667,40 @@ export class GitHubImportManager {
       await chmod(destination, 0o600);
     } finally {
       await rm(temporary, { force: true });
+    }
+  }
+
+  private async mutateStore(
+    mutation: (store: StoredImports) => StoredImports | Promise<StoredImports>,
+  ) {
+    const operation = this.storeMutation.then(async () => {
+      const store = await this.readStore();
+      const next = await mutation(store);
+      await this.writeStore(next);
+      return next;
+    });
+    this.storeMutation = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
+  private async gitState() {
+    const [head, branch] = await Promise.all([
+      this.git(["rev-parse", "--verify", "HEAD"]).catch(() => "unborn"),
+      this.git(["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(
+        () => "detached",
+      ),
+    ]);
+    return `${branch}\0${head}`;
+  }
+
+  private async ensureReadIdentity() {
+    const state = await this.gitState();
+    if (!this.readIdentityVerified || this.verifiedGitState !== state) {
+      await this.verifyForRead();
+      this.verifiedGitState = state;
     }
   }
 
@@ -960,8 +1003,14 @@ export class GitHubImportManager {
         (snapshot) => `${snapshot.repository}#${snapshot.pullRequest}` === key,
       );
       if (retained) {
-        retained.activatedAt = activationTime;
-        await this.writeStore(store);
+        await this.mutateStore((current) => {
+          const latest = current.snapshots.find(
+            (snapshot) =>
+              `${snapshot.repository}#${snapshot.pullRequest}` === key,
+          );
+          if (latest) latest.activatedAt = activationTime;
+          return current;
+        });
       }
       this.status = {
         version: 1,
@@ -1010,6 +1059,16 @@ export class GitHubImportManager {
 
   async verifyForRead(): Promise<GitHubImportStatus> {
     try {
+      if ((await this.readStore()).snapshots.length === 0) {
+        this.activeIdentity = null;
+        return {
+          version: 1,
+          state: "none",
+          retained: false,
+          stale: false,
+          message: "No retained GitHub comments exist for this repository.",
+        };
+      }
       const identity = await this.discoverIdentity();
       if (!identity) {
         this.activeIdentity = null;
@@ -1052,6 +1111,7 @@ export class GitHubImportManager {
       };
     } finally {
       this.readIdentityVerified = true;
+      this.verifiedGitState = await this.gitState().catch(() => null);
     }
   }
 
@@ -1519,7 +1579,9 @@ export class GitHubImportManager {
         threads,
         sourceIds: Object.keys(sources).sort(),
       };
-      await this.writeStore(this.admitSnapshot(store, snapshot, sources));
+      await this.mutateStore((current) =>
+        this.admitSnapshot(current, snapshot, sources),
+      );
       this.activationTime = now;
       this.status = {
         version: 1,
@@ -1567,7 +1629,10 @@ export class GitHubImportManager {
   }
 
   async hasCommentsForDiff(sourcePaths: string[]): Promise<boolean> {
-    if (!this.readIdentityVerified) await this.verifyForRead();
+    if (sourcePaths.length === 0) return false;
+    const retained = await this.readStore();
+    if (retained.snapshots.length === 0) return false;
+    await this.ensureReadIdentity();
     const active = await this.activeSnapshot();
     return Boolean(
       active?.snapshot.threads.some((thread) =>
@@ -1581,7 +1646,7 @@ export class GitHubImportManager {
     contents: { old: string | null; new: string | null },
     sourcePaths: string[] = [diff.path],
   ): Promise<ReviewComment[]> {
-    if (!this.readIdentityVerified) await this.verifyForRead();
+    await this.ensureReadIdentity();
     const active = await this.activeSnapshot();
     if (!active) return [];
     const { snapshot, sources } = active;

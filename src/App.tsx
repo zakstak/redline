@@ -3951,11 +3951,7 @@ export default function App() {
                       </p>
                     </>
                   ) : (
-                    <p>
-                      {comment.deleted
-                        ? "Original note deleted."
-                        : comment.body}
-                    </p>
+                    <p>{comment.body}</p>
                   )}
                   <p
                     className="thread-state"
@@ -3965,9 +3961,9 @@ export default function App() {
                       ? "Pending review"
                       : `Thread ${comment.state}`}
                   </p>
-                  {comment.replies.length > 0 ? (
+                  {(comment.replies?.length ?? 0) > 0 ? (
                     <ol className="thread-replies" aria-label="Thread replies">
-                      {comment.replies.map((reply) => (
+                      {comment.replies?.map((reply) => (
                         <li key={reply.id}>
                           <div>
                             {reply.author ? (

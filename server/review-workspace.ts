@@ -1295,15 +1295,16 @@ export class ReviewWorkspace {
     originalPath: string | undefined,
     kind: ChangeKind,
   ) {
+    const mappingLimit = 5 * 1024 * 1024;
     let oldContent: string | null = null;
     let newContent: string | null = null;
     if (kind !== "added" && kind !== "untracked") {
-      const old = await git(
-        this.root,
-        ["show", `HEAD:${originalPath ?? path}`],
-        [0, 128],
-      );
-      oldContent = old || null;
+      const object = `HEAD:${originalPath ?? path}`;
+      const size = Number(await git(this.root, ["cat-file", "-s", object]));
+      if (Number.isSafeInteger(size) && size <= mappingLimit) {
+        const old = await git(this.root, ["show", object], [0, 128]);
+        oldContent = old || null;
+      }
     }
     if (kind !== "deleted") {
       const absolute = assertPathInside(this.root, path);
@@ -1311,7 +1312,7 @@ export class ReviewWorkspace {
         const stat = await lstat(absolute);
         newContent = stat.isSymbolicLink()
           ? await readlink(absolute)
-          : stat.isFile()
+          : stat.isFile() && stat.size <= mappingLimit
             ? await readFile(absolute, "utf8")
             : null;
       } catch {
@@ -1391,8 +1392,14 @@ export class ReviewWorkspace {
       stats: diffStats(diff),
       comments,
     };
+    const pathIsReusedRenameSource = [
+      ...workspace.files,
+      ...workspace.deferredFiles,
+    ].some(
+      (candidate) => candidate.path !== path && candidate.originalPath === path,
+    );
     const sourcePaths = [
-      path,
+      ...(!pathIsReusedRenameSource ? [path] : []),
       ...(file.originalPath ? [file.originalPath] : []),
     ];
     const manager = this.githubImportManager();
