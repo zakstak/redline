@@ -6,7 +6,10 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
 import { THEME_COLOR_ROLES } from "../shared/theme.js";
-import { ReviewWorkspace } from "./review-workspace.js";
+import {
+  ReviewWorkspace,
+  ThemePreferenceRequestError,
+} from "./review-workspace.js";
 
 const reviewAnchorSchema = {
   type: "object",
@@ -883,7 +886,11 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
         body.preference,
       );
     } catch (error) {
-      return sendError(reply, error);
+      return sendError(
+        reply,
+        error,
+        error instanceof ThemePreferenceRequestError ? 400 : 500,
+      );
     }
   });
 
@@ -905,7 +912,11 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     try {
       return await workspace.deleteThemePreference(body.workspaceRoot);
     } catch (error) {
-      return sendError(reply, error);
+      return sendError(
+        reply,
+        error,
+        error instanceof ThemePreferenceRequestError ? 400 : 500,
+      );
     }
   });
 

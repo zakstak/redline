@@ -41,6 +41,8 @@ import type {
 import { ReviewDatabase } from "./review-database.js";
 import { parseThemePreference, type ThemePreference } from "../shared/theme.js";
 
+export class ThemePreferenceRequestError extends Error {}
+
 interface StatusEntry {
   path: string;
   originalPath?: string;
@@ -1427,13 +1429,13 @@ export class ReviewWorkspace {
   ): Promise<ReviewSettings> {
     await this.ensureInitialized();
     if (resolve(expectedWorkspaceRoot) !== this.root) {
-      throw new Error(
+      throw new ThemePreferenceRequestError(
         "The active workspace changed before its theme could be saved.",
       );
     }
     const theme = parseThemePreference(value);
     if (!theme) {
-      throw new Error(
+      throw new ThemePreferenceRequestError(
         "Theme preference must use a known preset, valid colors, and pass essential contrast checks.",
       );
     }
@@ -1443,7 +1445,7 @@ export class ReviewWorkspace {
         generation !== this.workspaceGeneration ||
         resolve(expectedWorkspaceRoot) !== this.root
       ) {
-        throw new Error(
+        throw new ThemePreferenceRequestError(
           "The active workspace changed before its theme could be saved.",
         );
       }
@@ -1458,7 +1460,7 @@ export class ReviewWorkspace {
   ): Promise<ReviewSettings> {
     await this.ensureInitialized();
     if (resolve(expectedWorkspaceRoot) !== this.root) {
-      throw new Error(
+      throw new ThemePreferenceRequestError(
         "The active workspace changed before its theme could be reset.",
       );
     }
@@ -1468,7 +1470,7 @@ export class ReviewWorkspace {
         generation !== this.workspaceGeneration ||
         resolve(expectedWorkspaceRoot) !== this.root
       ) {
-        throw new Error(
+        throw new ThemePreferenceRequestError(
           "The active workspace changed before its theme could be reset.",
         );
       }

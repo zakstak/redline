@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildServer } from "../server/app.js";
+import { ReviewDatabase } from "../server/review-database.js";
 import { ReviewWorkspace } from "../server/review-workspace.js";
 import type {
   CommentExportResponse,
@@ -446,6 +447,22 @@ describe("local review snapshots", () => {
         },
       });
       expect(inaccessible.statusCode).toBe(400);
+
+      const persistenceFailure = vi
+        .spyOn(ReviewDatabase.prototype, "updateThemePreference")
+        .mockImplementationOnce(() => {
+          throw new Error("database is temporarily busy");
+        });
+      const transientFailure = await app.inject({
+        method: "PUT",
+        url: "/api/settings/theme",
+        payload: {
+          workspaceRoot: repository,
+          preference: { version: 1, preset: "dusk", overrides: {} },
+        },
+      });
+      expect(transientFailure.statusCode).toBe(500);
+      persistenceFailure.mockRestore();
 
       const staleWorkspace = await app.inject({
         method: "DELETE",

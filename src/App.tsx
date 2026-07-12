@@ -628,6 +628,7 @@ function ThemeEditor({
 }
 
 function SettingsPage({
+  themeEditorRevision,
   onBack,
   onSaved,
   onThemeChange,
@@ -637,6 +638,7 @@ function SettingsPage({
   themeSaveState,
   workspace,
 }: {
+  themeEditorRevision: number;
   onBack: () => void;
   onSaved: (settings: ReviewSettings) => void;
   onThemeChange: (preference: ThemePreference) => void;
@@ -828,6 +830,7 @@ function SettingsPage({
         </section>
 
         <ThemeEditor
+          key={themeEditorRevision}
           onChange={onThemeChange}
           onResetWorkspace={onThemeReset}
           onRetry={onThemeRetry}
@@ -2166,7 +2169,6 @@ export default function App() {
   if (activePage === "settings") {
     return (
       <SettingsPage
-        key={`${workspace.root}:${themeEditorRevision}`}
         onBack={() => setActivePage("review")}
         onSaved={(updated) => {
           setSettings((current) => ({
@@ -2179,6 +2181,7 @@ export default function App() {
         onThemeReset={resetWorkspaceTheme}
         onThemeRetry={retryThemeSave}
         settings={settings}
+        themeEditorRevision={themeEditorRevision}
         themeSaveState={themeSaveState}
         workspace={workspace}
       />

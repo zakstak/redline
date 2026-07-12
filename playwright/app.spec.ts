@@ -1039,7 +1039,7 @@ test("preserves a pending theme while unrelated settings are acknowledged", asyn
   await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
 });
 
-test("keeps an invalid multi-color draft protected until the complete target is valid", async ({
+test("keeps an invalid color draft protected until the palette is valid", async ({
   page,
 }) => {
   let themeUpdates = 0;
@@ -1055,7 +1055,7 @@ test("keeps an invalid multi-color draft protected until the complete target is 
   await page.locator(".settings-nav-button").click();
   await page.getByText("Customize semantic colors").click();
 
-  await page.getByLabel("on accent").fill("#a52f3d");
+  await page.getByLabel("on accent").fill("#ff7b87");
   await expect(page.getByRole("alert")).toContainText("Draft not applied");
   expect(
     await page.evaluate(() =>
@@ -1063,15 +1063,10 @@ test("keeps an invalid multi-color draft protected until the complete target is 
         .getPropertyValue("--on-accent")
         .trim(),
     ),
-  ).toBe("#fff5f5");
+  ).toBe("#191a1f");
   expect(themeUpdates).toBe(0);
 
-  await page
-    .locator(".theme-color-grid label")
-    .filter({ hasText: /^accent/ })
-    .first()
-    .locator("input")
-    .fill("#fff5f5");
+  await page.getByLabel("on accent").fill("#191a1f");
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect
     .poll(() =>
@@ -1084,7 +1079,7 @@ test("keeps an invalid multi-color draft protected until the complete target is 
           .trim(),
       })),
     )
-    .toEqual({ accent: "#fff5f5", onAccent: "#a52f3d" });
+    .toEqual({ accent: "#ff7b87", onAccent: "#191a1f" });
   await expect(page.getByText("Theme saved for this workspace.")).toBeVisible();
   expect(themeUpdates).toBe(1);
 });
@@ -1115,6 +1110,10 @@ test("preserves an invalid draft when an earlier theme save is acknowledged", as
   });
   await page.goto("/");
   await page.locator(".settings-nav-button").click();
+  await page
+    .getByRole("group", { name: "Common context line values" })
+    .getByRole("button", { name: "8" })
+    .click();
   await page.getByRole("radio", { name: /Dusk/ }).click();
   await expect.poll(() => updateStarted).toBe(true);
   await page.getByText("Customize semantic colors").click();
@@ -1132,12 +1131,26 @@ test("clears an invalid theme draft when the workspace theme is reset", async ({
   await mockReviewApi(page);
   await page.goto("/");
   await page.locator(".settings-nav-button").click();
+  await page
+    .getByRole("group", { name: "Common context line values" })
+    .getByRole("button", { name: "8" })
+    .click();
+  await page.getByRole("radio", { name: /Vim/ }).click();
   await page.getByText("Customize semantic colors").click();
   await page.getByLabel("on accent").fill("not-a-color");
   await expect(page.getByRole("alert")).toContainText("Draft not applied");
 
   await page.getByRole("button", { name: "Reset workspace theme" }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("group", { name: "Common context line values" })
+      .getByRole("button", { name: "8" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("radio", { name: /Vim/ })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
   await page.getByText("Customize semantic colors").click();
   await expect(page.getByLabel("on accent")).toHaveValue("#191a1f");
 });
@@ -1198,6 +1211,10 @@ test("keeps a failed theme update retryable and never reports false success", as
   });
   await page.goto("/");
   await page.locator(".settings-nav-button").click();
+  await page
+    .getByRole("group", { name: "Common context line values" })
+    .getByRole("button", { name: "8" })
+    .click();
   await page.getByRole("radio", { name: /Dusk/ }).click();
 
   await expect(
@@ -1221,12 +1238,21 @@ test("discards a non-retryable rejected theme operation", async ({ page }) => {
   });
   await page.goto("/");
   await page.locator(".settings-nav-button").click();
+  await page
+    .getByRole("group", { name: "Common context line values" })
+    .getByRole("button", { name: "8" })
+    .click();
   await page.getByRole("radio", { name: /Dusk/ }).click();
 
   await expect(
     page.getByText("Theme was rejected by the server and was not saved."),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry save" })).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("group", { name: "Common context line values" })
+      .getByRole("button", { name: "8" }),
+  ).toHaveAttribute("aria-pressed", "true");
   await expect
     .poll(() =>
       page.evaluate(() =>

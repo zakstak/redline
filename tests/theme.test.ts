@@ -44,6 +44,8 @@ describe("theme contract", () => {
     );
     expect(checks).toContain("ink:paper");
     expect(checks).toContain("accent:paper");
+    expect(checks).toContain("accentStrong:paper");
+    expect(checks).toContain("onAccent:accentStrong");
     expect(checks).toContain("success:canvas");
     expect(checks).toContain("warning:paper");
     expect(checks).toContain("syntaxText:paper");
