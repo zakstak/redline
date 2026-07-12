@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
 import { buildServer } from "../server/app.js";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
+import { THEME_COLOR_ROLES } from "../shared/theme.js";
 
 const workspaceDir = process.cwd();
 let app = buildServer({ workspaceDir });
@@ -98,10 +99,16 @@ describe("static bootstrap serving", () => {
       url: "/api/openapi.json",
     });
     const document = response.json<{
+      paths: Record<string, unknown>;
       components: {
         schemas: {
           Comment: { properties: Record<string, unknown> };
           CreateComment: { properties: Record<string, unknown> };
+          ThemePreference: {
+            properties: {
+              overrides: { propertyNames: { enum: string[] } };
+            };
+          };
         };
       };
     }>();
@@ -116,7 +123,12 @@ describe("static bootstrap serving", () => {
             required: ["side", "startLine", "endLine"],
           },
           Settings: {
-            required: ["version", "diffContextLines", "keyboardLayout"],
+            required: [
+              "version",
+              "diffContextLines",
+              "keyboardLayout",
+              "theme",
+            ],
           },
           CommentExport: {
             required: ["version", "generatedAt", "workspace", "comments"],
@@ -133,6 +145,41 @@ describe("static bootstrap serving", () => {
     expect(document.components.schemas.Comment.properties).not.toHaveProperty(
       "lineNumber",
     );
+    expect(
+      document.components.schemas.ThemePreference.properties.overrides
+        .propertyNames.enum,
+    ).toEqual(THEME_COLOR_ROLES);
+    expect(document.paths).toMatchObject({
+      "/api/settings/theme": {
+        put: {
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  required: ["workspaceRoot", "preference"],
+                  properties: {
+                    preference: {
+                      $ref: "#/components/schemas/ThemePreference",
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        delete: {
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { required: ["workspaceRoot"] },
+              },
+            },
+          },
+        },
+      },
+    });
   });
 
   it("rejects non-loopback host headers", async () => {

@@ -39,6 +39,9 @@ import type {
   WorkspaceSnapshotSummary,
 } from "../shared/review-contract.js";
 import { ReviewDatabase } from "./review-database.js";
+import { parseThemePreference, type ThemePreference } from "../shared/theme.js";
+
+export class ThemePreferenceRequestError extends Error {}
 
 interface StatusEntry {
   path: string;
@@ -1417,6 +1420,61 @@ export class ReviewWorkspace {
         diffContextLines,
         keyboardLayout,
       );
+    });
+  }
+
+  async updateThemePreference(
+    expectedWorkspaceRoot: string,
+    value: unknown,
+  ): Promise<ReviewSettings> {
+    await this.ensureInitialized();
+    if (resolve(expectedWorkspaceRoot) !== this.root) {
+      throw new ThemePreferenceRequestError(
+        "The active workspace changed before its theme could be saved.",
+      );
+    }
+    const theme = parseThemePreference(value);
+    if (!theme) {
+      throw new ThemePreferenceRequestError(
+        "Theme preference must use a known preset, valid colors, and pass essential contrast checks.",
+      );
+    }
+    const generation = this.workspaceGeneration;
+    return this.enqueueExclusive(() => {
+      if (
+        generation !== this.workspaceGeneration ||
+        resolve(expectedWorkspaceRoot) !== this.root
+      ) {
+        throw new ThemePreferenceRequestError(
+          "The active workspace changed before its theme could be saved.",
+        );
+      }
+      return this.reviewDatabase().updateThemePreference(
+        theme satisfies ThemePreference,
+      );
+    });
+  }
+
+  async deleteThemePreference(
+    expectedWorkspaceRoot: string,
+  ): Promise<ReviewSettings> {
+    await this.ensureInitialized();
+    if (resolve(expectedWorkspaceRoot) !== this.root) {
+      throw new ThemePreferenceRequestError(
+        "The active workspace changed before its theme could be reset.",
+      );
+    }
+    const generation = this.workspaceGeneration;
+    return this.enqueueExclusive(() => {
+      if (
+        generation !== this.workspaceGeneration ||
+        resolve(expectedWorkspaceRoot) !== this.root
+      ) {
+        throw new ThemePreferenceRequestError(
+          "The active workspace changed before its theme could be reset.",
+        );
+      }
+      return this.reviewDatabase().deleteThemePreference();
     });
   }
 

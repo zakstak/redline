@@ -5,7 +5,11 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
-import { ReviewWorkspace } from "./review-workspace.js";
+import { THEME_COLOR_ROLES } from "../shared/theme.js";
+import {
+  ReviewWorkspace,
+  ThemePreferenceRequestError,
+} from "./review-workspace.js";
 
 const reviewAnchorSchema = {
   type: "object",
@@ -141,6 +145,53 @@ const openApiDocument = {
               },
             },
           },
+        },
+      },
+    },
+    "/api/settings/theme": {
+      put: {
+        summary: "Validate and save the active workspace theme",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["workspaceRoot", "preference"],
+                properties: {
+                  workspaceRoot: { type: "string" },
+                  preference: {
+                    $ref: "#/components/schemas/ThemePreference",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Updated workspace settings" },
+          "400": { description: "Invalid or stale theme preference" },
+        },
+      },
+      delete: {
+        summary: "Delete the active workspace theme preference",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["workspaceRoot"],
+                properties: { workspaceRoot: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Default workspace theme settings" },
+          "400": { description: "Stale workspace identity" },
         },
       },
     },
@@ -553,11 +604,29 @@ const openApiDocument = {
       },
       Settings: {
         type: "object",
-        required: ["version", "diffContextLines", "keyboardLayout"],
+        required: ["version", "diffContextLines", "keyboardLayout", "theme"],
         properties: {
           version: { type: "integer", const: 1 },
           diffContextLines: { type: "integer", minimum: 0, maximum: 20 },
           keyboardLayout: { type: "string", enum: ["normie", "vim"] },
+          theme: { $ref: "#/components/schemas/ThemePreference" },
+        },
+      },
+      ThemePreference: {
+        type: "object",
+        additionalProperties: false,
+        required: ["version", "preset", "overrides"],
+        properties: {
+          version: { type: "integer", const: 1 },
+          preset: { type: "string", enum: ["redline", "dusk", "paper"] },
+          overrides: {
+            type: "object",
+            propertyNames: { enum: THEME_COLOR_ROLES },
+            additionalProperties: {
+              type: "string",
+              pattern: "^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+            },
+          },
         },
       },
     },
@@ -682,6 +751,8 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
       openWorkspace: { method: "POST", path: "/api/workspace/open" },
       settings: { method: "GET", path: "/api/settings" },
       updateSettings: { method: "PUT", path: "/api/settings" },
+      updateTheme: { method: "PUT", path: "/api/settings/theme" },
+      resetTheme: { method: "DELETE", path: "/api/settings/theme" },
       diff: { method: "GET", path: "/api/diff?path=<workspace-relative-path>" },
       reviewData: { method: "GET", path: "/api/review" },
       exportComments: {
@@ -786,6 +857,66 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
       );
     } catch (error) {
       return sendError(reply, error);
+    }
+  });
+
+  app.put("/api/settings/theme", async (request, reply) => {
+    const body = request.body as {
+      workspaceRoot?: unknown;
+      preference?: unknown;
+    };
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      Object.keys(body).some(
+        (key) => !["workspaceRoot", "preference"].includes(key),
+      ) ||
+      typeof body.workspaceRoot !== "string" ||
+      !body.workspaceRoot
+    ) {
+      return sendError(
+        reply,
+        new Error("Theme updates require the active workspace identity."),
+      );
+    }
+    try {
+      return await workspace.updateThemePreference(
+        body.workspaceRoot,
+        body.preference,
+      );
+    } catch (error) {
+      return sendError(
+        reply,
+        error,
+        error instanceof ThemePreferenceRequestError ? 400 : 500,
+      );
+    }
+  });
+
+  app.delete("/api/settings/theme", async (_request, reply) => {
+    const body = _request.body as { workspaceRoot?: unknown };
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      Object.keys(body).some((key) => key !== "workspaceRoot") ||
+      typeof body.workspaceRoot !== "string" ||
+      !body.workspaceRoot
+    ) {
+      return sendError(
+        reply,
+        new Error("Theme reset requires the active workspace identity."),
+      );
+    }
+    try {
+      return await workspace.deleteThemePreference(body.workspaceRoot);
+    } catch (error) {
+      return sendError(
+        reply,
+        error,
+        error instanceof ThemePreferenceRequestError ? 400 : 500,
+      );
     }
   });
 
