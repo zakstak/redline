@@ -244,7 +244,7 @@ const openApiDocument = {
       },
     },
     "/api/github/status": {
-      get: {
+      post: {
         summary: "Discover the exact matching open GitHub pull request",
         responses: { "200": { description: "GitHub import availability" } },
       },
@@ -1042,7 +1042,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       deleteComment: { method: "DELETE", path: "/api/comments/:id" },
       deferFile: { method: "POST", path: "/api/review/defer" },
       restoreFile: { method: "POST", path: "/api/review/restore" },
-      githubStatus: { method: "GET", path: "/api/github/status" },
+      githubStatus: { method: "POST", path: "/api/github/status" },
       githubRefresh: { method: "POST", path: "/api/github/refresh" },
       githubAvatar: { method: "GET", path: "/api/github/avatar?url=..." },
       cliDiscovery: { method: "GET", path: "/api/cli/discovery" },
@@ -1374,7 +1374,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
   });
 
-  app.get("/api/github/status", async (_request, reply) => {
+  app.post("/api/github/status", async (_request, reply) => {
     try {
       return await workspace.getGitHubStatus();
     } catch (error) {

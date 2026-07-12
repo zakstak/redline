@@ -589,6 +589,7 @@ export class GitHubImportManager {
   };
   private refreshPromise: Promise<GitHubImportStatus> | null = null;
   private discoveryPromise: Promise<GitHubImportStatus> | null = null;
+  private readIdentityVerified = false;
   private retrievalCalls = 0;
   private retrievalBytes = 0;
   private retrievalStderrBytes = 0;
@@ -1049,6 +1050,8 @@ export class GitHubImportManager {
         stale: false,
         message: "GitHub pull request identity could not be proven safely.",
       };
+    } finally {
+      this.readIdentityVerified = true;
     }
   }
 
@@ -1563,11 +1566,22 @@ export class GitHubImportManager {
     return snapshot ? { snapshot, sources: store.sources } : null;
   }
 
+  async hasCommentsForDiff(sourcePaths: string[]): Promise<boolean> {
+    if (!this.readIdentityVerified) await this.verifyForRead();
+    const active = await this.activeSnapshot();
+    return Boolean(
+      active?.snapshot.threads.some((thread) =>
+        sourcePaths.includes(thread.path),
+      ),
+    );
+  }
+
   async commentsForDiff(
     diff: DiffResponse,
     contents: { old: string | null; new: string | null },
     sourcePaths: string[] = [diff.path],
   ): Promise<ReviewComment[]> {
+    if (!this.readIdentityVerified) await this.verifyForRead();
     const active = await this.activeSnapshot();
     if (!active) return [];
     const { snapshot, sources } = active;

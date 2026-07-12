@@ -415,6 +415,22 @@ describe("GitHub import synchronization", () => {
       path: "src/renamed.ts",
       github: { originalPath: "src/example.ts", mapping: "mapped" },
     });
+    expect(await importer.hasCommentsForDiff(["src/unrelated.ts"])).toBe(false);
+
+    const retainedReader = new GitHubImportManager(
+      repository,
+      gitDir,
+      executor,
+    );
+    const retainedComments = await retainedReader.commentsForDiff(diff, {
+      old: "before\nafter\n",
+      new: "before\nupdated\nafter\n",
+    });
+    expect(retainedComments).toHaveLength(1);
+    expect(retainedComments[0]).toMatchObject({
+      id: "github:base/project#17:thread-1",
+      anchors: [{ side: "new", startLine: 2, endLine: 2 }],
+    });
     const unavailable = await importer.allComments(() =>
       Promise.reject(new Error("path unavailable")),
     );

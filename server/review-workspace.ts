@@ -1396,11 +1396,18 @@ export class ReviewWorkspace {
       stats: diffStats(diff),
       comments,
     };
-    const imported = await this.githubImportManager().commentsForDiff(
-      response,
-      await this.displayedContents(path, file.originalPath, file.kind),
-      [path, ...(file.originalPath ? [file.originalPath] : [])],
-    );
+    const sourcePaths = [
+      path,
+      ...(file.originalPath ? [file.originalPath] : []),
+    ];
+    const manager = this.githubImportManager();
+    const imported = (await manager.hasCommentsForDiff(sourcePaths))
+      ? await manager.commentsForDiff(
+          response,
+          await this.displayedContents(path, file.originalPath, file.kind),
+          sourcePaths,
+        )
+      : [];
     response.comments = [...comments, ...imported].sort(
       (left, right) =>
         left.createdAt.localeCompare(right.createdAt) ||

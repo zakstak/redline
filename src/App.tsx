@@ -1826,7 +1826,10 @@ export default function App() {
     }
     let active = true;
     setGithubStatus(null);
-    void api<GitHubImportStatus>("/api/github/status")
+    void api<GitHubImportStatus>("/api/github/status", {
+      method: "POST",
+      body: "{}",
+    })
       .then((status) => {
         if (!active) return;
         setGithubStatus(status);
@@ -1879,7 +1882,10 @@ export default function App() {
     const expectedWorkspaceIdentity = activeWorkspaceIdentityRef.current;
     setGithubRefreshing(true);
     try {
-      const status = await api<GitHubImportStatus>("/api/github/status");
+      const status = await api<GitHubImportStatus>("/api/github/status", {
+        method: "POST",
+        body: "{}",
+      });
       if (expectedWorkspaceIdentity !== activeWorkspaceIdentityRef.current)
         return;
       setGithubStatus(status);
