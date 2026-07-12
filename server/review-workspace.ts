@@ -46,6 +46,7 @@ import {
 } from "../shared/typography.js";
 
 export class ThemePreferenceRequestError extends Error {}
+export class TypographyPreferenceRequestError extends Error {}
 
 interface StatusEntry {
   path: string;
@@ -1488,13 +1489,13 @@ export class ReviewWorkspace {
   ): Promise<ReviewSettings> {
     await this.ensureInitialized();
     if (resolve(expectedWorkspaceRoot) !== this.root) {
-      throw new Error(
+      throw new TypographyPreferenceRequestError(
         "The active workspace changed before its typography could be saved.",
       );
     }
     const typography = parseTypographyPreference(value);
     if (!typography) {
-      throw new Error(
+      throw new TypographyPreferenceRequestError(
         "Typography must use supported fonts and whole-number sizes within the documented bounds.",
       );
     }
@@ -1504,7 +1505,7 @@ export class ReviewWorkspace {
         generation !== this.workspaceGeneration ||
         resolve(expectedWorkspaceRoot) !== this.root
       ) {
-        throw new Error(
+        throw new TypographyPreferenceRequestError(
           "The active workspace changed before its typography could be saved.",
         );
       }

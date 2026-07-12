@@ -9,6 +9,7 @@ import { THEME_COLOR_ROLES } from "../shared/theme.js";
 import {
   ReviewWorkspace,
   ThemePreferenceRequestError,
+  TypographyPreferenceRequestError,
 } from "./review-workspace.js";
 
 const reviewAnchorSchema = {
@@ -198,11 +199,30 @@ const openApiDocument = {
     "/api/settings/typography": {
       put: {
         summary: "Validate and atomically save active workspace typography",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["workspaceRoot", "preference"],
+                properties: {
+                  workspaceRoot: { type: "string" },
+                  preference: {
+                    $ref: "#/components/schemas/TypographyPreference",
+                  },
+                },
+              },
+            },
+          },
+        },
         responses: {
           "200": { description: "Updated workspace settings" },
           "400": {
             description: "Invalid typography or stale workspace identity",
           },
+          "500": { description: "Typography persistence failed" },
         },
       },
     },
@@ -627,6 +647,7 @@ const openApiDocument = {
           diffContextLines: { type: "integer", minimum: 0, maximum: 20 },
           keyboardLayout: { type: "string", enum: ["normie", "vim"] },
           theme: { $ref: "#/components/schemas/ThemePreference" },
+          typography: { $ref: "#/components/schemas/TypographyPreference" },
         },
       },
       ThemePreference: {
@@ -644,27 +665,27 @@ const openApiDocument = {
               pattern: "^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
             },
           },
-          typography: {
-            type: "object",
-            additionalProperties: false,
-            required: [
-              "version",
-              "uiFont",
-              "codeFont",
-              "interfaceFontSize",
-              "codeFontSize",
-            ],
-            properties: {
-              version: { type: "integer", const: 1 },
-              uiFont: { type: "string", enum: ["system", "humanist", "serif"] },
-              codeFont: {
-                type: "string",
-                enum: ["system", "modern", "compact"],
-              },
-              interfaceFontSize: { type: "integer", minimum: 12, maximum: 18 },
-              codeFontSize: { type: "integer", minimum: 12, maximum: 20 },
-            },
+        },
+      },
+      TypographyPreference: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "version",
+          "uiFont",
+          "codeFont",
+          "interfaceFontSize",
+          "codeFontSize",
+        ],
+        properties: {
+          version: { type: "integer", const: 1 },
+          uiFont: { type: "string", enum: ["system", "humanist", "serif"] },
+          codeFont: {
+            type: "string",
+            enum: ["system", "modern", "compact"],
           },
+          interfaceFontSize: { type: "integer", minimum: 12, maximum: 18 },
+          codeFontSize: { type: "integer", minimum: 12, maximum: 20 },
         },
       },
     },
@@ -985,7 +1006,11 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
         body.preference,
       );
     } catch (error) {
-      return sendError(reply, error);
+      return sendError(
+        reply,
+        error,
+        error instanceof TypographyPreferenceRequestError ? 400 : 500,
+      );
     }
   });
 

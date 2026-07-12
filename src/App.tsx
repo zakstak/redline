@@ -73,7 +73,7 @@ type ThemeSaveOperation = {
   revision: number;
   workspaceRoot: string;
 };
-type TypographySaveState = "saved" | "saving" | "failed";
+type TypographySaveState = "saved" | "saving" | "failed" | "rejected";
 type TypographySaveOperation = {
   preference: TypographyPreference;
   revision: number;
@@ -764,7 +764,11 @@ function TypographyEditor({
         <div className="typography-save-row">
           <p
             aria-live="polite"
-            role={saveState === "failed" ? "alert" : "status"}
+            role={
+              saveState === "failed" || saveState === "rejected"
+                ? "alert"
+                : "status"
+            }
           >
             {saveState === "saving"
               ? "Saving typography…"
@@ -772,7 +776,9 @@ function TypographyEditor({
                 ? unsaved
                   ? "Typography is unsaved."
                   : "The font choice could not be saved and was restored."
-                : "Typography saved for this workspace."}
+                : saveState === "rejected"
+                  ? "Typography was rejected by the server and was restored."
+                  : "Typography saved for this workspace."}
           </p>
           {saveState === "failed" && unsaved ? (
             <button onClick={onRetry} type="button">
@@ -1269,6 +1275,10 @@ export default function App() {
       persistedThemeRef.current = DEFAULT_THEME_PREFERENCE;
       applyTheme(DEFAULT_THEME_PREFERENCE);
       applyTypography(DEFAULT_TYPOGRAPHY_PREFERENCE);
+      confirmedTypographyRef.current = DEFAULT_TYPOGRAPHY_PREFERENCE;
+      desiredTypographyRef.current = DEFAULT_TYPOGRAPHY_PREFERENCE;
+      typographyQueueRef.current = null;
+      typographyPausedRef.current = false;
       setSettings((current) => ({
         ...current,
         theme: DEFAULT_THEME_PREFERENCE,
@@ -1439,36 +1449,33 @@ export default function App() {
         setTypographySaveState("saved");
         setTypographyUnsaved(false);
       }
-    } catch {
+    } catch (error) {
       typographyMutationInFlightRef.current = false;
-      typographyPausedRef.current = true;
-      const latest = desiredTypographyRef.current;
-      const restoreFailedFont =
-        operation.source === "font" &&
-        operation.revision === latestTypographyIntentRef.current &&
-        !typographyQueueRef.current &&
-        latest.uiFont === operation.preference.uiFont &&
-        latest.codeFont === operation.preference.codeFont &&
-        latest.interfaceFontSize ===
-          confirmedTypographyRef.current.interfaceFontSize &&
-        latest.codeFontSize === confirmedTypographyRef.current.codeFontSize;
-      if (restoreFailedFont) {
+      const rejected = error instanceof ApiError && error.status < 500;
+      if (rejected) {
+        typographyQueueRef.current = null;
+        typographyPausedRef.current = false;
         desiredTypographyRef.current = confirmedTypographyRef.current;
         applyTypography(confirmedTypographyRef.current);
         setSettings((current) => ({
           ...current,
           typography: confirmedTypographyRef.current,
         }));
-      } else if (!typographyQueueRef.current) {
+        setTypographySaveState("rejected");
+        setTypographyUnsaved(false);
+        return;
+      }
+      typographyPausedRef.current = true;
+      const latest = desiredTypographyRef.current;
+      if (!typographyQueueRef.current)
         typographyQueueRef.current = {
           preference: latest,
           revision: latestTypographyIntentRef.current,
           workspaceRoot: operation.workspaceRoot,
           source: operation.source,
         };
-      }
       setTypographySaveState("failed");
-      setTypographyUnsaved(!restoreFailedFont);
+      setTypographyUnsaved(true);
     }
   }, []);
   flushTypographyQueueRef.current = () => void flushTypographyQueue();
@@ -2494,9 +2501,7 @@ export default function App() {
           setSettings((current) => ({
             ...updated,
             theme: current.theme,
-            typography: typographyUnsaved
-              ? current.typography
-              : updated.typography,
+            typography: current.typography,
           }));
           setContextLines(updated.diffContextLines);
         }}

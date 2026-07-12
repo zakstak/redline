@@ -481,6 +481,26 @@ describe("local review snapshots", () => {
         ).statusCode,
       ).toBe(400);
 
+      const typographyPersistenceFailure = vi
+        .spyOn(ReviewDatabase.prototype, "updateTypographyPreference")
+        .mockImplementationOnce(() => {
+          throw new Error("database is busy");
+        });
+      try {
+        const failedTypographyUpdate = await app.inject({
+          method: "PUT",
+          url: "/api/settings/typography",
+          payload: { workspaceRoot: repository, preference: typography },
+        });
+        expect(failedTypographyUpdate.statusCode).toBe(500);
+        expect(failedTypographyUpdate.json()).toMatchObject({
+          message: "database is busy",
+          statusCode: 500,
+        });
+      } finally {
+        typographyPersistenceFailure.mockRestore();
+      }
+
       const themed = await app.inject({
         method: "PUT",
         url: "/api/settings/theme",
