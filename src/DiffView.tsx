@@ -609,9 +609,12 @@ export const DiffView = forwardRef<DiffViewHandle, DiffViewProps>(
         (Number.isFinite(codeScale) ? codeScale : 1),
     );
     const normalizedCodeScale = Number.isFinite(codeScale) ? codeScale : 1;
-    const hunkHeight = Math.round(
-      (coarsePointer ? TOUCH_HUNK_HEIGHT : HUNK_HEIGHT) * normalizedCodeScale,
-    );
+    const hunkHeight = coarsePointer
+      ? Math.max(
+          TOUCH_HUNK_HEIGHT,
+          Math.round(TOUCH_HUNK_HEIGHT * normalizedCodeScale),
+        )
+      : Math.round(HUNK_HEIGHT * normalizedCodeScale);
     const metaHeight = Math.round(META_HEIGHT * normalizedCodeScale);
     const items = useMemo<ActiveItem[]>(
       () =>

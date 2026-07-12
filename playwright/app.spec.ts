@@ -1117,6 +1117,53 @@ test("keeps review-noise visibility session-only in Settings and restores trigge
   ).not.toBeChecked();
 });
 
+test("preserves a retryable typography change when review noise is toggled", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let settingsReads = 0;
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() === "GET") settingsReads += 1;
+    return route.fallback();
+  });
+  await page.route("**/api/settings/typography", (route) =>
+    route.fulfill({ status: 500, json: { message: "injected" } }),
+  );
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByRole("button", { name: "Decrease code text size" }).click();
+  await expect(page.getByRole("alert")).toContainText("unsaved");
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("15 px");
+
+  await page.getByRole("checkbox", { name: /Show review noise/ }).check();
+
+  await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(
+    page.locator(".typography-size-control output").last(),
+  ).toContainText("15 px");
+  expect(settingsReads).toBe(1);
+});
+
+test("includes each file's nonzero comment count in its accessible name", async ({
+  page,
+}) => {
+  const workspaceWithComments: WorkspaceResponse = {
+    ...changedWorkspace,
+    files: changedWorkspace.files.map((file, index) =>
+      index === 0 ? { ...file, commentCount: 2 } : file,
+    ),
+    counts: { ...changedWorkspace.counts, comments: 2 },
+  };
+  await mockReviewApi(page, diff, [], workspaceWithComments);
+  await page.goto("/");
+
+  await expect(
+    page.getByRole("button", { name: /src\/App\.tsx.*2 comments/ }),
+  ).toBeVisible();
+});
+
 for (const contextCase of [
   { width: 1440, height: 900, layout: "split" },
   { width: 720, height: 450, layout: "unified" },
@@ -2307,6 +2354,13 @@ test.describe("phone touch layout", () => {
     ).toBe(true);
 
     await page.locator(".settings-nav-button").click();
+    for (let index = 0; index < 4; index += 1)
+      await page
+        .getByRole("button", { name: "Decrease code text size" })
+        .click();
+    await expect(
+      page.locator(".typography-size-control output").last(),
+    ).toContainText("12 px");
     const noiseBox = await page
       .getByRole("checkbox", { name: /Show review noise/ })
       .locator("..")
@@ -2323,5 +2377,11 @@ test.describe("phone touch layout", () => {
       .first()
       .boundingBox();
     expect(contextBox?.height).toBeGreaterThanOrEqual(44);
+    const hunkBox = await page.locator(".diff-hunk-line").first().boundingBox();
+    expect(hunkBox?.height).toBeGreaterThanOrEqual(44);
+    await expect(page.locator(".diff-view")).toHaveCSS(
+      "--diff-hunk-height",
+      "44px",
+    );
   });
 });

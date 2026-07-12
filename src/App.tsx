@@ -1198,6 +1198,7 @@ export default function App() {
   const diffRequestRef = useRef(0);
   const workspaceRequestRef = useRef(0);
   const settingsRequestRef = useRef(0);
+  const includeNoiseRef = useRef(includeNoise);
   const workspaceOpenRef = useRef(false);
   const workspaceEpochRef = useRef(0);
   const reviewPanelRef = useRef<HTMLElement>(null);
@@ -1223,16 +1224,17 @@ export default function App() {
   const desiredTypographyRef = useRef(DEFAULT_TYPOGRAPHY_PREFERENCE);
   const flushTypographyQueueRef = useRef<() => void>(() => undefined);
   activeWorkspaceRootRef.current = workspace?.root ?? "";
+  includeNoiseRef.current = includeNoise;
 
   const loadWorkspace = useCallback(
-    async (silent = false) => {
+    async (silent = false, includeNoiseOverride?: boolean) => {
       if (workspaceOpenRef.current) return null;
       const requestId = ++workspaceRequestRef.current;
       if (silent) setRefreshing(true);
       else setLoadingWorkspace(true);
       try {
         const nextWorkspace = await api<WorkspaceResponse>(
-          `/api/workspace?includeNoise=${includeNoise}`,
+          `/api/workspace?includeNoise=${includeNoiseOverride ?? includeNoiseRef.current}`,
         );
         if (
           requestId !== workspaceRequestRef.current ||
@@ -1275,7 +1277,7 @@ export default function App() {
         }
       }
     },
-    [includeNoise],
+    [],
   );
 
   const loadSettings = useCallback(async () => {
@@ -2557,7 +2559,10 @@ export default function App() {
       <SettingsPage
         includeNoise={includeNoise}
         onBack={closeSettings}
-        onIncludeNoiseChange={setIncludeNoise}
+        onIncludeNoiseChange={(nextIncludeNoise) => {
+          setIncludeNoise(nextIncludeNoise);
+          void loadWorkspace(true, nextIncludeNoise);
+        }}
         onSaved={(updated) => {
           setSettings((current) => ({
             ...updated,
@@ -2710,7 +2715,7 @@ export default function App() {
               visibleFiles.map((file) => (
                 <div className="file-list-item" key={file.path} role="listitem">
                   <button
-                    aria-label={`${file.path}, ${statusLabel(file)}, ${changeLabel(file)}`}
+                    aria-label={`${file.path}, ${statusLabel(file)}, ${changeLabel(file)}${file.commentCount > 0 ? `, ${file.commentCount} ${file.commentCount === 1 ? "comment" : "comments"}` : ""}`}
                     aria-current={activePath === file.path ? "true" : undefined}
                     className="file-row"
                     data-active={activePath === file.path}
