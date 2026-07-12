@@ -1259,6 +1259,8 @@ export default function App() {
       applyTypography(nextSettings.typography);
       confirmedTypographyRef.current = nextSettings.typography;
       desiredTypographyRef.current = nextSettings.typography;
+      typographyQueueRef.current = null;
+      typographyPausedRef.current = false;
       setTypographySaveState("saved");
       setTypographyUnsaved(false);
       return nextSettings;
@@ -1443,6 +1445,10 @@ export default function App() {
       const latest = desiredTypographyRef.current;
       const restoreFailedFont =
         operation.source === "font" &&
+        operation.revision === latestTypographyIntentRef.current &&
+        !typographyQueueRef.current &&
+        latest.uiFont === operation.preference.uiFont &&
+        latest.codeFont === operation.preference.codeFont &&
         latest.interfaceFontSize ===
           confirmedTypographyRef.current.interfaceFontSize &&
         latest.codeFontSize === confirmedTypographyRef.current.codeFontSize;

@@ -1664,6 +1664,99 @@ test("rolls a failed font choice back to the confirmed family", async ({
   await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
 });
 
+test("keeps a newer queued font choice available when an earlier save fails", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let attempts = 0;
+  let releaseFailure: (() => void) | undefined;
+  let saved: ReviewSettings["typography"] | undefined;
+  await page.route("**/api/settings/typography", async (route) => {
+    attempts += 1;
+    if (attempts === 1) {
+      await new Promise<void>((resolve) => {
+        releaseFailure = resolve;
+      });
+      return route.fulfill({ status: 500, json: { message: "injected" } });
+    }
+    saved = (
+      route.request().postDataJSON() as {
+        preference: ReviewSettings["typography"];
+      }
+    ).preference;
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: saved,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  await page.getByLabel("Interface font").selectOption("serif");
+  await expect.poll(() => attempts).toBe(1);
+  await expect(page.getByLabel("Interface font")).toHaveValue("serif");
+  await page.getByLabel("Interface font").selectOption("humanist");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue(
+          "--font-ui",
+        ),
+      ),
+    )
+    .toContain("Trebuchet");
+  releaseFailure?.();
+  await expect(page.getByRole("alert")).toContainText("unsaved");
+  await expect(page.getByLabel("Interface font")).toHaveValue("humanist");
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  expect(saved?.uiFont).toBe("humanist");
+});
+
+test("autosaves typography normally after settings reload clears a failed font save", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  let attempts = 0;
+  await page.route("**/api/settings/typography", async (route) => {
+    attempts += 1;
+    if (attempts === 1)
+      return route.fulfill({ status: 500, json: { message: "injected" } });
+    const body = route.request().postDataJSON() as {
+      preference: ReviewSettings["typography"];
+    };
+    return route.fulfill({
+      json: {
+        version: 1,
+        diffContextLines: 3,
+        keyboardLayout: "normie",
+        theme: DEFAULT_THEME_PREFERENCE,
+        typography: body.preference,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".settings-nav-button").click();
+  await page.getByLabel("Interface font").selectOption("serif");
+  await expect(page.getByRole("alert")).toContainText("was restored");
+  await page.reload();
+  await page.locator(".settings-nav-button").click();
+  await page.getByLabel("Interface font").selectOption("humanist");
+  await expect(
+    page.getByText("Typography saved for this workspace."),
+  ).toBeVisible();
+  expect(attempts).toBe(2);
+});
+
 test("keeps maximum typography operable on narrow unified and wide split diffs", async ({
   page,
 }) => {
