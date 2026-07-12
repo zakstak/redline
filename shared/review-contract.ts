@@ -38,6 +38,29 @@ export interface ReviewComment {
   threadRevision: number;
   replies: ReviewReply[];
   deleted?: boolean;
+  source?: "local" | "github";
+  readOnly?: boolean;
+  author?: ReviewAuthor;
+  github?: GitHubReviewMetadata;
+}
+
+export interface ReviewAuthor {
+  login: string | null;
+  name: string;
+  avatarUrl: string | null;
+  initials: string;
+}
+
+export interface GitHubReviewMetadata {
+  repository: string;
+  pullRequest: number;
+  threadId: string;
+  url: string;
+  resolved: boolean;
+  synchronizedAt: string;
+  mapping: "mapped" | "unmapped" | "conflict";
+  unmappedReason?: string;
+  originalPath?: string;
 }
 
 export type ReviewThreadState =
@@ -49,7 +72,7 @@ export type ReviewDecision = Exclude<ReviewThreadState, "pending">;
 
 export interface ReviewReply {
   id: string;
-  actor: "user" | "agent";
+  actor: "user" | "agent" | "github";
   body: string;
   createdAt: string;
   decision?: ReviewDecision;
@@ -61,6 +84,29 @@ export interface ReviewReply {
     fingerprint: string;
     rootVersion: number;
   };
+  author?: ReviewAuthor;
+  externalId?: string;
+  url?: string;
+}
+
+export interface GitHubImportStatus {
+  version: 1;
+  state:
+    | "available"
+    | "none"
+    | "ambiguous"
+    | "missing_gh"
+    | "authentication_failed"
+    | "unavailable"
+    | "refreshing"
+    | "failed";
+  repository?: string;
+  pullRequest?: number;
+  title?: string;
+  retained: boolean;
+  stale: boolean;
+  lastSuccessAt?: string;
+  message: string;
 }
 
 export interface ReviewThreadPacket {

@@ -51,6 +51,7 @@ import {
 
 export class ThemePreferenceRequestError extends Error {}
 export class TypographyPreferenceRequestError extends Error {}
+import { GitHubImportManager } from "./github-import.js";
 
 interface StatusEntry {
   path: string;
@@ -221,12 +222,12 @@ function git(
       args,
       {
         cwd: root,
+        encoding: "utf8",
         env: Object.fromEntries(
           Object.entries(process.env).filter(
-            ([key]) => !key.startsWith("GIT_"),
+            ([name]) => !name.startsWith("GIT_"),
           ),
         ),
-        encoding: "utf8",
         maxBuffer: 48 * 1024 * 1024,
         windowsHide: true,
       },
@@ -512,6 +513,7 @@ export class ReviewWorkspace {
   private root: string;
   private gitDir = "";
   private database: ReviewDatabase | null = null;
+  private githubImports: GitHubImportManager | null = null;
   private inspectionCache = new Map<
     string,
     {
@@ -575,6 +577,7 @@ export class ReviewWorkspace {
       this.root = root;
       this.gitDir = gitDir;
       this.database = targetDatabase;
+      this.githubImports = new GitHubImportManager(root, gitDir);
       this.workspaceGeneration += 1;
       this.inspectionCache.clear();
       previousDatabase?.close();
@@ -598,6 +601,7 @@ export class ReviewWorkspace {
     this.stopFileWatch();
     this.database?.close();
     this.database = null;
+    this.githubImports = null;
   }
 
   getRoot() {
@@ -715,6 +719,12 @@ export class ReviewWorkspace {
     if (!this.database)
       throw new Error("The local review database is not initialized.");
     return this.database;
+  }
+
+  private githubImportManager() {
+    if (!this.githubImports)
+      throw new Error("The GitHub import service is not initialized.");
+    return this.githubImports;
   }
 
   private async readPersistedStore(
@@ -1254,6 +1264,69 @@ export class ReviewWorkspace {
     return this.readStable(() => this.getDiffOnce(path, context));
   }
 
+  async getGitHubStatus() {
+    await this.ensureInitialized();
+    const generation = this.workspaceGeneration;
+    const manager = this.githubImportManager();
+    const status = await manager.discover();
+    if (
+      generation !== this.workspaceGeneration ||
+      manager !== this.githubImports
+    )
+      throw new Error("workspace_mismatch");
+    return status;
+  }
+
+  async refreshGitHubComments(signal?: AbortSignal) {
+    await this.ensureInitialized();
+    const generation = this.workspaceGeneration;
+    const manager = this.githubImportManager();
+    const status = await manager.refresh(signal);
+    if (
+      generation !== this.workspaceGeneration ||
+      manager !== this.githubImports
+    )
+      throw new Error("workspace_mismatch");
+    return status;
+  }
+
+  async getGitHubAvatar(url: string) {
+    await this.ensureInitialized();
+    return this.githubImportManager().getAvatar(url);
+  }
+
+  private async displayedContents(
+    path: string,
+    originalPath: string | undefined,
+    kind: ChangeKind,
+  ) {
+    const mappingLimit = 5 * 1024 * 1024;
+    let oldContent: string | null = null;
+    let newContent: string | null = null;
+    if (kind !== "added" && kind !== "untracked") {
+      const object = `HEAD:${originalPath ?? path}`;
+      const size = Number(await git(this.root, ["cat-file", "-s", object]));
+      if (Number.isSafeInteger(size) && size <= mappingLimit) {
+        const old = await git(this.root, ["show", object], [0, 128]);
+        oldContent = old || null;
+      }
+    }
+    if (kind !== "deleted") {
+      const absolute = assertPathInside(this.root, path);
+      try {
+        const stat = await lstat(absolute);
+        newContent = stat.isSymbolicLink()
+          ? await readlink(absolute)
+          : stat.isFile() && stat.size <= mappingLimit
+            ? await readFile(absolute, "utf8")
+            : null;
+      } catch {
+        newContent = null;
+      }
+    }
+    return { old: oldContent, new: newContent };
+  }
+
   private async getDiffOnce(path: string, context = 3): Promise<DiffResponse> {
     await this.ensureInitialized();
     const workspace = await this.getWorkspaceOnce(true);
@@ -1311,8 +1384,7 @@ export class ReviewWorkspace {
         ...comment,
         outdated: comment.fingerprint !== file.fingerprint,
       }));
-
-    return {
+    const response: DiffResponse = {
       schemaVersion: 1,
       path,
       diff,
@@ -1325,6 +1397,42 @@ export class ReviewWorkspace {
       stats: diffStats(diff),
       comments,
     };
+    const pathIsReusedRenameSource = [
+      ...workspace.files,
+      ...workspace.deferredFiles,
+    ].some(
+      (candidate) => candidate.path !== path && candidate.originalPath === path,
+    );
+    const sourcePaths = [
+      path,
+      ...(file.originalPath ? [file.originalPath] : []),
+    ];
+    const manager = this.githubImportManager();
+    const importedCandidates = (await manager.hasCommentsForDiff(sourcePaths))
+      ? await manager.commentsForDiff(
+          response,
+          await this.displayedContents(path, file.originalPath, file.kind),
+          sourcePaths,
+        )
+      : [];
+    const imported = pathIsReusedRenameSource
+      ? importedCandidates.filter((comment) => comment.anchors.length > 0)
+      : importedCandidates;
+    response.comments = [...comments, ...imported].sort(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) ||
+        left.id.localeCompare(right.id),
+    );
+    const latestWorkspace = await this.getWorkspaceOnce(true);
+    const latest = [
+      ...latestWorkspace.files,
+      ...latestWorkspace.deferredFiles,
+    ].find((candidate) => candidate.path === path);
+    if (!latest || latest.fingerprint !== response.fingerprint)
+      throw new Error(
+        "The file changed while GitHub anchors were being mapped.",
+      );
+    return response;
   }
 
   async approveFile(path: string, expectedFingerprint: string) {
@@ -1595,6 +1703,8 @@ export class ReviewWorkspace {
 
   async deleteComment(id: string) {
     await this.ensureInitialized();
+    if (this.githubImportManager().isImportedId(id))
+      throw new Error("imported_read_only");
     const generation = this.workspaceGeneration;
     await this.enqueueExclusive(() => {
       if (generation !== this.workspaceGeneration) {
@@ -1608,7 +1718,7 @@ export class ReviewWorkspace {
   }
 
   private async packetForComment(
-    comment: Omit<ReviewComment, "outdated">,
+    comment: Omit<ReviewComment, "outdated"> & { outdated?: boolean },
   ): Promise<ReviewThreadPacket> {
     return this.readStable(async () => {
       const workspace = await this.getWorkspaceOnce(true);
@@ -1620,7 +1730,9 @@ export class ReviewWorkspace {
         workspaceRoot: workspace.root,
         comment: {
           ...comment,
-          outdated: current?.fingerprint !== comment.fingerprint,
+          outdated:
+            comment.outdated === true ||
+            current?.fingerprint !== comment.fingerprint,
         },
         currentFingerprint: current?.fingerprint ?? null,
         acceptedContext: {
@@ -1636,6 +1748,15 @@ export class ReviewWorkspace {
   }
 
   async getThreadPacket(id: string): Promise<ReviewThreadPacket> {
+    const manager = this.githubImportManager();
+    if (manager.isImportedId(id)) {
+      await manager.verifyForRead();
+      if (manager !== this.githubImports) throw new Error("workspace_mismatch");
+      const imported = await this.importedReviewComments();
+      const comment = imported.find((candidate) => candidate.id === id);
+      if (!comment) throw new Error("not_found");
+      return this.packetForComment(comment);
+    }
     const comment = this.reviewDatabase().commentById(id);
     if (!comment) throw new Error("not_found");
     return this.packetForComment(comment);
@@ -1662,6 +1783,8 @@ export class ReviewWorkspace {
     acceptedContext?: ReviewThreadPacket["acceptedContext"];
   }): Promise<ReviewThreadPacket> {
     await this.ensureInitialized();
+    if (this.githubImportManager().isImportedId(input.commentId))
+      throw new Error("imported_read_only");
     const validState = new Set<ReviewThreadState>([
       "pending",
       "accepted",
@@ -1797,6 +1920,7 @@ export class ReviewWorkspace {
   }
 
   private async getReviewDataOnce(): Promise<ReviewDataResponse> {
+    await this.githubImportManager().verifyForRead();
     const workspace = await this.getWorkspace(false);
     const fingerprints = new Map(
       [...workspace.files, ...workspace.deferredFiles].map((file) => [
@@ -1815,8 +1939,30 @@ export class ReviewWorkspace {
       version: 1,
       generatedAt: new Date().toISOString(),
       workspace,
-      comments,
+      comments: [...comments, ...(await this.importedReviewComments())].sort(
+        (left, right) =>
+          left.createdAt.localeCompare(right.createdAt) ||
+          left.id.localeCompare(right.id),
+      ),
     };
+  }
+
+  private async importedReviewComments() {
+    return this.githubImportManager().allComments(async (path) => {
+      const workspace = await this.getWorkspaceOnce(true);
+      const files = [...workspace.files, ...workspace.deferredFiles];
+      const file =
+        files.find((candidate) => candidate.originalPath === path) ??
+        files.find((candidate) => candidate.path === path);
+      if (!file) throw new Error("not_found");
+      const diff = await this.getDiffOnce(file.path, 3);
+      const contents = await this.displayedContents(
+        file.path,
+        file.originalPath,
+        file.kind,
+      );
+      return { diff, ...contents };
+    });
   }
 
   async getCommentExport(): Promise<CommentExportResponse> {
@@ -2001,6 +2147,17 @@ export class ReviewWorkspace {
           .join(", ") || "File comment";
       lines.push(`## ${comment.path}`);
       lines.push("");
+      if (comment.source === "github" && comment.github) {
+        lines.push(
+          `Source: GitHub ${comment.github.repository}#${comment.github.pullRequest} · ${comment.readOnly ? "read-only" : "local"}`,
+        );
+        lines.push(`Author: ${comment.author?.name ?? "Deleted GitHub user"}`);
+        lines.push(`Thread: ${comment.github.url}`);
+        lines.push(
+          `Mapping: ${comment.github.mapping}${comment.github.unmappedReason ? ` (${comment.github.unmappedReason})` : ""}`,
+        );
+        lines.push("");
+      }
       lines.push(`${lineLabel}${comment.outdated ? " (outdated)" : ""}`);
       lines.push(
         `State: ${comment.state} · root v${comment.rootVersion} · thread r${comment.threadRevision}`,
@@ -2010,9 +2167,10 @@ export class ReviewWorkspace {
       lines.push("");
       for (const reply of comment.replies) {
         lines.push(
-          `> **${reply.actor}${reply.decision ? ` · ${reply.decision}` : ""}** — ${reply.createdAt}`,
+          `> **${reply.author?.name ?? reply.actor}${reply.decision ? ` · ${reply.decision}` : ""}** — ${reply.createdAt}`,
         );
         lines.push(`> ${reply.body.replaceAll("\n", "\n> ")}`);
+        if (reply.url) lines.push(`> Source: ${reply.url}`);
         lines.push("");
       }
 

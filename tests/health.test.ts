@@ -205,6 +205,8 @@ describe("static bootstrap serving", () => {
     "/api/review/snapshot",
     "/api/review/defer",
     "/api/review/restore",
+    "/api/github/status",
+    "/api/github/refresh",
     "/api/comments/comment-id/replies",
     "/api/comments/comment-id/reopen",
     "/api/cli/comments",

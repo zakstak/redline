@@ -8,10 +8,14 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type {
   ChangedFile,
   DiffResponse,
   FilesApprovalResponse,
+  GitHubImportStatus,
+  ReviewAuthor,
   ReviewComment,
   ReviewSettings,
   SnapshotResponse,
@@ -352,14 +356,78 @@ function selectionLabel(lines: SelectedLine[]) {
 }
 
 function commentLineLabel(comment: ReviewComment) {
-  return comment.anchors
-    .map((anchor) => {
-      const side = anchor.side === "old" ? "Old" : "New";
-      return anchor.startLine === anchor.endLine
-        ? `${side} line ${anchor.startLine}`
-        : `${side} lines ${anchor.startLine} to ${anchor.endLine}`;
-    })
-    .join(", ");
+  return (
+    comment.anchors
+      .map((anchor) => {
+        const side = anchor.side === "old" ? "Old" : "New";
+        return anchor.startLine === anchor.endLine
+          ? `${side} line ${anchor.startLine}`
+          : `${side} lines ${anchor.startLine} to ${anchor.endLine}`;
+      })
+      .join(", ") || "Unavailable anchor"
+  );
+}
+
+function safeMarkdownUrl(value: string) {
+  if (/\p{Cc}/u.test(value)) return "";
+  if (value.startsWith("#")) return value;
+  try {
+    decodeURIComponent(value);
+    const url = new URL(value);
+    if (url.protocol === "mailto:") return value;
+    if (
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      !url.username &&
+      !url.password
+    )
+      return value;
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function MarkdownBody({ value }: { value: string }) {
+  return (
+    <ReactMarkdown
+      components={{
+        img: () => null,
+        a: ({ href, children }) =>
+          href ? (
+            <a href={href} rel="noreferrer" target="_blank">
+              {children}
+            </a>
+          ) : (
+            <span>{children}</span>
+          ),
+      }}
+      remarkPlugins={[remarkGfm]}
+      skipHtml
+      urlTransform={safeMarkdownUrl}
+    >
+      {value}
+    </ReactMarkdown>
+  );
+}
+
+function AuthorBadge({ author }: { author: ReviewAuthor }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <span className="comment-author">
+      <span aria-hidden="true" className="author-avatar">
+        {author.avatarUrl && !failed ? (
+          <img
+            alt=""
+            onError={() => setFailed(true)}
+            src={`/api/github/avatar?url=${encodeURIComponent(author.avatarUrl)}`}
+          />
+        ) : (
+          author.initials
+        )}
+      </span>
+      <strong>{author.name}</strong>
+    </span>
+  );
 }
 
 function LoadingShell() {
@@ -1181,6 +1249,10 @@ export default function App() {
   const [workspacePathOpen, setWorkspacePathOpen] = useState(false);
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
   const [watchState, setWatchState] = useState<WatchState>("connecting");
+  const [githubStatus, setGithubStatus] = useState<GitHubImportStatus | null>(
+    null,
+  );
+  const [githubRefreshing, setGithubRefreshing] = useState(false);
   const fileSearchRef = useRef<HTMLInputElement>(null);
   const settingsNavRef = useRef<HTMLButtonElement>(null);
   const filePanelRef = useRef<HTMLElement>(null);
@@ -1225,6 +1297,10 @@ export default function App() {
   const flushTypographyQueueRef = useRef<() => void>(() => undefined);
   activeWorkspaceRootRef.current = workspace?.root ?? "";
   includeNoiseRef.current = includeNoise;
+  const activeWorkspaceIdentityRef = useRef("");
+  activeWorkspaceIdentityRef.current = workspace
+    ? `${workspace.root}\0${workspace.branch}\0${workspace.head}`
+    : "";
 
   const loadWorkspace = useCallback(
     async (silent = false, includeNoiseOverride?: boolean) => {
@@ -1740,6 +1816,92 @@ export default function App() {
       if (requestId === diffRequestRef.current) setDiffLoading(false);
     }
   }, [activePath, contextLines, workspace?.root, workspaceEpoch]);
+  const loadDiffRef = useRef(loadDiff);
+  loadDiffRef.current = loadDiff;
+
+  useEffect(() => {
+    if (!workspace?.root) {
+      setGithubStatus(null);
+      return;
+    }
+    let active = true;
+    setGithubStatus(null);
+    void api<GitHubImportStatus>("/api/github/status", {
+      method: "POST",
+      body: "{}",
+    })
+      .then((status) => {
+        if (!active) return;
+        setGithubStatus(status);
+        if (status.retained) void loadDiffRef.current();
+      })
+      .catch(() => {
+        if (active)
+          setGithubStatus({
+            version: 1,
+            state: "unavailable",
+            retained: false,
+            stale: false,
+            message: "GitHub pull request discovery is unavailable.",
+          });
+      });
+    return () => {
+      active = false;
+    };
+  }, [workspace?.branch, workspace?.head, workspace?.root]);
+
+  const refreshGitHubComments = async () => {
+    const expectedWorkspaceIdentity = activeWorkspaceIdentityRef.current;
+    setGithubRefreshing(true);
+    try {
+      const status = await api<GitHubImportStatus>("/api/github/refresh", {
+        method: "POST",
+        body: "{}",
+      });
+      if (expectedWorkspaceIdentity !== activeWorkspaceIdentityRef.current)
+        return;
+      setGithubStatus(status);
+      if (status.retained) {
+        await loadWorkspace(true);
+        await loadDiff();
+      }
+    } catch (error) {
+      if (expectedWorkspaceIdentity !== activeWorkspaceIdentityRef.current)
+        return;
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "GitHub comments could not be refreshed.",
+      );
+    } finally {
+      setGithubRefreshing(false);
+    }
+  };
+
+  const retryGithubDiscovery = async () => {
+    const expectedWorkspaceIdentity = activeWorkspaceIdentityRef.current;
+    setGithubRefreshing(true);
+    try {
+      const status = await api<GitHubImportStatus>("/api/github/status", {
+        method: "POST",
+        body: "{}",
+      });
+      if (expectedWorkspaceIdentity !== activeWorkspaceIdentityRef.current)
+        return;
+      setGithubStatus(status);
+      if (status.retained) await loadDiff();
+    } catch (error) {
+      if (expectedWorkspaceIdentity !== activeWorkspaceIdentityRef.current)
+        return;
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "GitHub pull request discovery is unavailable.",
+      );
+    } finally {
+      setGithubRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     void loadDiff();
@@ -3616,6 +3778,56 @@ export default function App() {
             <ChevronIcon />
           </button>
 
+          <section
+            aria-busy={githubRefreshing}
+            className="github-import"
+            aria-label="GitHub review comments"
+          >
+            <div>
+              <p className="rail-label">GitHub</p>
+              <h2>
+                {githubStatus?.repository && githubStatus.pullRequest
+                  ? `${githubStatus.repository} #${githubStatus.pullRequest}`
+                  : "Pull request comments"}
+              </h2>
+            </div>
+            <p aria-live="polite">
+              {githubStatus?.message ?? "Discovering matching pull request…"}
+            </p>
+            {githubStatus?.state === "available" ||
+            githubStatus?.state === "failed" ? (
+              <button
+                disabled={githubRefreshing}
+                onClick={() => void refreshGitHubComments()}
+                type="button"
+              >
+                <RefreshIcon />
+                {githubRefreshing
+                  ? "Synchronizing"
+                  : githubStatus.retained
+                    ? "Refresh GitHub comments"
+                    : "Import GitHub comments"}
+              </button>
+            ) : null}
+            {githubStatus &&
+            githubStatus.state !== "available" &&
+            githubStatus.state !== "failed" ? (
+              <button
+                disabled={githubRefreshing}
+                onClick={() => void retryGithubDiscovery()}
+                type="button"
+              >
+                <RefreshIcon /> Retry discovery
+              </button>
+            ) : null}
+            {githubStatus?.lastSuccessAt ? (
+              <small>
+                Last synchronized{" "}
+                {formatRelativeTime(githubStatus.lastSuccessAt)}
+              </small>
+            ) : null}
+          </section>
+
           <section className="comments-section" aria-label="Review comments">
             <div className="comments-heading">
               <div>
@@ -3630,7 +3842,7 @@ export default function App() {
                       (total, file) => total + file.commentCount,
                       0,
                     ) ===
-                  0
+                    0 && !githubStatus?.retained
                 }
                 onClick={() => void copyComments()}
                 type="button"
@@ -3698,9 +3910,14 @@ export default function App() {
                 <article
                   className="review-comment"
                   data-outdated={comment.outdated}
+                  data-source={comment.source ?? "local"}
+                  data-thread-state={comment.state}
                   key={comment.id}
                 >
                   <header>
+                    {comment.author ? (
+                      <AuthorBadge author={comment.author} />
+                    ) : null}
                     <span>
                       {comment.outdated
                         ? `Was ${commentLineLabel(comment)}`
@@ -3712,7 +3929,30 @@ export default function App() {
                       <time>{formatRelativeTime(comment.createdAt)}</time>
                     )}
                   </header>
-                  <p>{comment.body}</p>
+                  {comment.source === "github" ? (
+                    <>
+                      <div className="github-markdown">
+                        <MarkdownBody value={comment.body} />
+                      </div>
+                      <p className="github-thread-meta">
+                        <a
+                          href={comment.github?.url}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          View on GitHub
+                        </a>
+                        <span>Read-only</span>
+                        {comment.github?.mapping !== "mapped" ? (
+                          <span>
+                            Anchor unavailable: {comment.github?.unmappedReason}
+                          </span>
+                        ) : null}
+                      </p>
+                    </>
+                  ) : (
+                    <p>{comment.body}</p>
+                  )}
                   <p
                     className="thread-state"
                     aria-label={`Thread state: ${comment.state ?? "pending"}`}
@@ -3726,26 +3966,52 @@ export default function App() {
                       {comment.replies?.map((reply) => (
                         <li key={reply.id}>
                           <div>
-                            <strong>
-                              {reply.actor === "agent" ? "Agent" : "You"}
-                            </strong>
+                            {reply.author ? (
+                              <AuthorBadge author={reply.author} />
+                            ) : (
+                              <strong>
+                                {reply.actor === "agent"
+                                  ? "Agent"
+                                  : reply.actor === "user"
+                                    ? "You"
+                                    : reply.actor}
+                              </strong>
+                            )}
                             {reply.decision ? (
                               <span>{reply.decision}</span>
                             ) : null}
                             <time>{formatRelativeTime(reply.createdAt)}</time>
                           </div>
-                          <p>{reply.body}</p>
+                          {comment.source === "github" ? (
+                            <>
+                              <div className="github-markdown">
+                                <MarkdownBody value={reply.body} />
+                              </div>
+                              {reply.url ? (
+                                <a
+                                  href={reply.url}
+                                  rel="noreferrer"
+                                  target="_blank"
+                                >
+                                  View reply on GitHub
+                                </a>
+                              ) : null}
+                            </>
+                          ) : (
+                            <p>{reply.body}</p>
+                          )}
                         </li>
                       ))}
                     </ol>
                   ) : null}
                   {comment.outdated ? (
                     <p className="stale-comment-note">
-                      The file changed after this note. It stays on the reviewed
-                      version and is not attached to the current line.
+                      {comment.source === "github"
+                        ? "This GitHub thread is outdated or cannot be mapped uniquely to the displayed diff."
+                        : "The file changed after this note. It stays on the reviewed version and is not attached to the current line."}
                     </p>
                   ) : null}
-                  {!comment.deleted ? (
+                  {!comment.deleted && !comment.readOnly ? (
                     <button
                       onClick={() => scheduleCommentDeletion(comment)}
                       type="button"

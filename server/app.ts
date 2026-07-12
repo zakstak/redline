@@ -243,6 +243,30 @@ const openApiDocument = {
         },
       },
     },
+    "/api/github/status": {
+      post: {
+        summary: "Discover the exact matching open GitHub pull request",
+        responses: { "200": { description: "GitHub import availability" } },
+      },
+    },
+    "/api/github/refresh": {
+      post: {
+        summary: "Import or refresh read-only GitHub review threads",
+        responses: {
+          "200": { description: "GitHub import status" },
+          "409": { description: "Pull request identity could not be proven" },
+        },
+      },
+    },
+    "/api/github/avatar": {
+      get: {
+        summary: "Proxy one validated GitHub avatar through the local origin",
+        responses: {
+          "200": { description: "Validated raster avatar" },
+          "400": { description: "Avatar URL or response was invalid" },
+        },
+      },
+    },
     "/api/cli/discovery": {
       get: {
         summary: "Discover process-bound CLI workspace identity",
@@ -479,7 +503,7 @@ const openApiDocument = {
             name: "id",
             in: "path",
             required: true,
-            schema: { type: "string", format: "uuid" },
+            schema: { type: "string" },
           },
         ],
         responses: {
@@ -545,14 +569,14 @@ const openApiDocument = {
           "replies",
         ],
         properties: {
-          id: { type: "string", format: "uuid" },
+          id: { type: "string" },
           path: { type: "string" },
           anchors: {
             type: "array",
-            minItems: 1,
+            minItems: 0,
             items: { $ref: "#/components/schemas/ReviewAnchor" },
           },
-          body: { type: "string", maxLength: 4000 },
+          body: { type: "string" },
           createdAt: { type: "string", format: "date-time" },
           fingerprint: { type: "string" },
           outdated: { type: "boolean" },
@@ -567,6 +591,20 @@ const openApiDocument = {
             type: "array",
             items: { $ref: "#/components/schemas/ReviewReply" },
           },
+          source: { type: "string", enum: ["local", "github"] },
+          readOnly: { type: "boolean" },
+          author: { $ref: "#/components/schemas/ReviewAuthor" },
+          github: { type: "object" },
+        },
+      },
+      ReviewAuthor: {
+        type: "object",
+        required: ["login", "name", "avatarUrl", "initials"],
+        properties: {
+          login: { type: ["string", "null"] },
+          name: { type: "string" },
+          avatarUrl: { type: ["string", "null"] },
+          initials: { type: "string" },
         },
       },
       ReviewReply: {
@@ -574,8 +612,8 @@ const openApiDocument = {
         required: ["id", "actor", "body", "createdAt"],
         properties: {
           id: { type: "string" },
-          actor: { type: "string", enum: ["user", "agent"] },
-          body: { type: "string", maxLength: 4000 },
+          actor: { type: "string", enum: ["user", "agent", "github"] },
+          body: { type: "string" },
           createdAt: { type: "string", format: "date-time" },
           decision: {
             type: "string",
@@ -583,6 +621,9 @@ const openApiDocument = {
           },
           requestId: { type: "string" },
           answeredRoot: { type: "object" },
+          author: { $ref: "#/components/schemas/ReviewAuthor" },
+          externalId: { type: "string" },
+          url: { type: "string" },
         },
       },
       CreateComment: {
@@ -887,6 +928,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         : "The local workspace request failed.";
     const stableCodes = new Set([
       "idempotency_conflict",
+      "imported_read_only",
       "invalid_input",
       "invalid_state",
       "not_found",
@@ -946,6 +988,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
   });
 
+  app.addHook("onSend", async (_request, reply) => {
+    reply.header(
+      "content-security-policy",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    );
+  });
+
   app.get("/api/health", () => ({
     app: APP_NAME,
     status: HEALTH_STATUS,
@@ -993,6 +1042,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       deleteComment: { method: "DELETE", path: "/api/comments/:id" },
       deferFile: { method: "POST", path: "/api/review/defer" },
       restoreFile: { method: "POST", path: "/api/review/restore" },
+      githubStatus: { method: "POST", path: "/api/github/status" },
+      githubRefresh: { method: "POST", path: "/api/github/refresh" },
+      githubAvatar: { method: "GET", path: "/api/github/avatar?url=..." },
       cliDiscovery: { method: "GET", path: "/api/cli/discovery" },
       agentReview: { method: "GET", path: "/api/cli/agent/review/:id" },
       agentReviewAll: { method: "GET", path: "/api/cli/agent/review-all" },
@@ -1319,6 +1371,48 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return await workspace.getCommentExport();
     } catch (error) {
       return sendError(reply, error);
+    }
+  });
+
+  app.post("/api/github/status", async (_request, reply) => {
+    try {
+      return await workspace.getGitHubStatus();
+    } catch (error) {
+      return sendError(reply, error, 503);
+    }
+  });
+
+  app.get("/api/github/avatar", async (request, reply) => {
+    const query = request.query as { url?: unknown };
+    if (typeof query.url !== "string")
+      return sendError(reply, new Error("invalid_avatar_url"));
+    try {
+      const avatar = await workspace.getGitHubAvatar(query.url);
+      return reply
+        .header("cache-control", "private, max-age=3600")
+        .type(avatar.contentType)
+        .send(avatar.data);
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post("/api/github/refresh", async (request, reply) => {
+    const controller = new AbortController();
+    let completed = false;
+    const abort = () => {
+      if (!completed) controller.abort();
+    };
+    request.raw.once("aborted", abort);
+    reply.raw.once("close", abort);
+    try {
+      return await workspace.refreshGitHubComments(controller.signal);
+    } catch (error) {
+      return sendError(reply, error, 409);
+    } finally {
+      completed = true;
+      request.raw.removeListener("aborted", abort);
+      reply.raw.removeListener("close", abort);
     }
   });
 

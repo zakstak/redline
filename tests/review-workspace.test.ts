@@ -19,6 +19,8 @@ import { ReviewWorkspace } from "../server/review-workspace.js";
 import type {
   CommentExportResponse,
   DiffResponse,
+  GitHubImportStatus,
+  ReviewComment,
   ReviewDataResponse,
 } from "../shared/review-contract.js";
 import { DEFAULT_THEME_PREFERENCE } from "../shared/theme.js";
@@ -62,6 +64,78 @@ afterEach(async () => {
 });
 
 describe("workspace initialization", () => {
+  it("verifies imported threads before lookup and preserves GitHub staleness", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    try {
+      await workspace.initialize();
+      const current = (await workspace.getDiff("example.ts")).fingerprint;
+      const id = "github:base/project#1:thread-1";
+      const steps: string[] = [];
+      const manager = {
+        isImportedId: (candidate: string) => candidate === id,
+        verifyForRead: (): Promise<GitHubImportStatus> => {
+          steps.push("verify");
+          return Promise.resolve({
+            version: 1,
+            state: "available",
+            retained: true,
+            stale: false,
+            message: "Available.",
+          });
+        },
+      };
+      const internals = workspace as unknown as {
+        githubImports: typeof manager;
+        importedReviewComments(): Promise<ReviewComment[]>;
+      };
+      internals.githubImports = manager;
+      internals.importedReviewComments = () => {
+        steps.push("lookup");
+        return Promise.resolve([
+          {
+            id,
+            path: "example.ts",
+            anchors: [],
+            body: "Outdated upstream thread",
+            author: {
+              name: "Reviewer",
+              login: "reviewer",
+              initials: "R",
+              avatarUrl: null,
+            },
+            createdAt: "2026-07-12T00:00:00.000Z",
+            fingerprint: current,
+            outdated: true,
+            state: "pending",
+            rootVersion: 1,
+            threadRevision: 0,
+            replies: [],
+            source: "github",
+            readOnly: true,
+            github: {
+              repository: "base/project",
+              pullRequest: 1,
+              threadId: "thread-1",
+              url: "https://github.com/base/project/pull/1#discussion_r1",
+              mapping: "unmapped",
+              originalPath: "example.ts",
+              isResolved: false,
+              isOutdated: true,
+              resolved: false,
+              synchronizedAt: "2026-07-12T00:00:00.000Z",
+            },
+          },
+        ]);
+      };
+
+      const packet = await workspace.getThreadPacket(id);
+      expect(steps).toEqual(["verify", "lookup"]);
+      expect(packet.comment.outdated).toBe(true);
+    } finally {
+      workspace.close();
+    }
+  });
+
   it("defers the full workspace scan until workspace data is requested", async () => {
     const workspace = new ReviewWorkspace(repository);
     const getWorkspace = vi.spyOn(workspace, "getWorkspace");
@@ -75,6 +149,22 @@ describe("workspace initialization", () => {
       expect(getWorkspace).toHaveBeenCalledOnce();
     } finally {
       workspace.close();
+    }
+  });
+
+  it("ignores inherited local Git environment variables", async () => {
+    const previousGitDir = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(repository, "missing-git-dir");
+    const workspace = new ReviewWorkspace(repository);
+    try {
+      await workspace.initialize();
+      await expect(workspace.getWorkspace()).resolves.toMatchObject({
+        root: repository,
+      });
+    } finally {
+      workspace.close();
+      if (previousGitDir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = previousGitDir;
     }
   });
 });
@@ -597,6 +687,25 @@ describe("local review snapshots", () => {
     } finally {
       await app.close();
     }
+  });
+
+  it("rejects imported GitHub identifiers through every local thread mutation", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    await workspace.initialize();
+    await expect(
+      workspace.deleteComment("github:repository#1:thread"),
+    ).rejects.toThrow("imported_read_only");
+    await expect(
+      workspace.mutateThread({
+        commentId: "github:repository#1:thread",
+        expectedState: "pending",
+        expectedRootVersion: 1,
+        expectedThreadRevision: 0,
+        requestId: "imported-mutation",
+        body: "Must remain immutable.",
+      }),
+    ).rejects.toThrow("imported_read_only");
+    workspace.close();
   });
 
   it("emits a debounced local event when a worktree file changes", async () => {
@@ -1512,6 +1621,118 @@ describe("local review snapshots", () => {
       expect(result.diff).toContain("rename from before-name.ts");
       expect(result.diff).not.toContain("new file mode");
       expect(result.stats).toEqual({ additions: 0, deletions: 0 });
+    } finally {
+      workspace.close();
+    }
+  });
+
+  it("prefers a rename target when exporting threads for a reused original path", async () => {
+    await writeFile(join(repository, "before-name.ts"), "original\n", "utf8");
+    await runGit("add", "before-name.ts");
+    await runGit("commit", "-m", "add reusable rename source");
+    await runGit("mv", "before-name.ts", "after-name.ts");
+    await writeFile(join(repository, "before-name.ts"), "new file\n", "utf8");
+
+    const workspace = new ReviewWorkspace(repository);
+    let resolvedPath = "";
+    try {
+      await workspace.initialize();
+      const internal = workspace as unknown as {
+        githubImports: {
+          hasCommentsForDiff: () => Promise<boolean>;
+          allComments: (
+            resolver: (path: string) => Promise<{ diff: DiffResponse }>,
+          ) => Promise<[]>;
+        };
+        importedReviewComments: () => Promise<[]>;
+      };
+      internal.githubImports = {
+        hasCommentsForDiff: () => Promise.resolve(false),
+        allComments: async (resolver) => {
+          const resolved = await resolver("before-name.ts");
+          resolvedPath = resolved.diff.path;
+          return [];
+        },
+      };
+
+      await internal.importedReviewComments();
+      expect(resolvedPath).toBe("after-name.ts");
+    } finally {
+      workspace.close();
+    }
+  });
+
+  it("keeps mapped replacement-file imports on a reused rename-source path", async () => {
+    await writeFile(join(repository, "before-name.ts"), "original\n", "utf8");
+    await runGit("add", "before-name.ts");
+    await runGit("commit", "-m", "add reusable rename source");
+    await runGit("mv", "before-name.ts", "after-name.ts");
+    await writeFile(
+      join(repository, "before-name.ts"),
+      "replacement\n",
+      "utf8",
+    );
+
+    const workspace = new ReviewWorkspace(repository);
+    try {
+      await workspace.initialize();
+      const internal = workspace as unknown as {
+        githubImports: {
+          hasCommentsForDiff(paths: string[]): Promise<boolean>;
+          commentsForDiff(diff: DiffResponse): Promise<ReviewComment[]>;
+        };
+      };
+      internal.githubImports = {
+        hasCommentsForDiff: (paths) => {
+          expect(paths).toContain("before-name.ts");
+          return Promise.resolve(true);
+        },
+        commentsForDiff: (diff) =>
+          Promise.resolve([
+            {
+              id: "github:base/project#1:replacement",
+              path: diff.path,
+              anchors: [{ side: "new", startLine: 1, endLine: 1 }],
+              body: "Review the replacement file.",
+              author: {
+                name: "Reviewer",
+                login: "reviewer",
+                initials: "R",
+                avatarUrl: null,
+              },
+              createdAt: "2026-07-12T00:00:00.000Z",
+              fingerprint: diff.fingerprint,
+              outdated: false,
+              state: "pending",
+              rootVersion: 1,
+              threadRevision: 0,
+              replies: [],
+              source: "github",
+              readOnly: true,
+              github: {
+                repository: "base/project",
+                pullRequest: 1,
+                threadId: "replacement",
+                url: "https://github.com/base/project/pull/1#discussion_r1",
+                mapping: "mapped",
+                originalPath: "before-name.ts",
+                isResolved: false,
+                isOutdated: false,
+                resolved: false,
+                synchronizedAt: "2026-07-12T00:00:00.000Z",
+              },
+            },
+          ]),
+      };
+
+      const result = await workspace.getDiff("before-name.ts");
+      expect(result.comments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "github:base/project#1:replacement",
+          }),
+        ]),
+      );
     } finally {
       workspace.close();
     }
