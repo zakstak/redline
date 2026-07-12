@@ -434,6 +434,51 @@ test("imports read-only GitHub threads with safe GFM and per-reply authors", asy
   );
 });
 
+test("reloads the displayed diff after retained retry discovery", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  await page.unroute("**/api/github/status");
+  await page.unroute("**/api/diff?*");
+  let statusRequests = 0;
+  let diffRequests = 0;
+  await page.route("**/api/github/status", (route) => {
+    statusRequests += 1;
+    return route.fulfill({
+      json:
+        statusRequests === 1
+          ? {
+              version: 1,
+              state: "unavailable",
+              retained: false,
+              stale: false,
+              message: "GitHub discovery temporarily failed.",
+            }
+          : {
+              version: 1,
+              state: "available",
+              retained: true,
+              stale: true,
+              message: "Retained GitHub comments are available.",
+            },
+    });
+  });
+  await page.route("**/api/diff?*", (route) => {
+    diffRequests += 1;
+    return route.fulfill({ json: diff });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Snapshot 2$/ }).click();
+  await expect(
+    page.getByRole("button", { name: "Retry discovery" }),
+  ).toBeVisible();
+  await expect.poll(() => diffRequests).toBe(1);
+  await page.getByRole("button", { name: "Retry discovery" }).click();
+  await expect.poll(() => statusRequests).toBe(2);
+  await expect.poll(() => diffRequests).toBe(2);
+});
+
 test("collapses and restores the review panel", async ({ page }) => {
   await mockReviewApi(page);
   await page.goto("/");

@@ -1889,6 +1889,7 @@ export default function App() {
       if (expectedWorkspaceIdentity !== activeWorkspaceIdentityRef.current)
         return;
       setGithubStatus(status);
+      if (status.retained) await loadDiff();
     } catch (error) {
       if (expectedWorkspaceIdentity !== activeWorkspaceIdentityRef.current)
         return;

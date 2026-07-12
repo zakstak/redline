@@ -77,6 +77,22 @@ describe("workspace initialization", () => {
       workspace.close();
     }
   });
+
+  it("ignores inherited local Git environment variables", async () => {
+    const previousGitDir = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(repository, "missing-git-dir");
+    const workspace = new ReviewWorkspace(repository);
+    try {
+      await workspace.initialize();
+      await expect(workspace.getWorkspace()).resolves.toMatchObject({
+        root: repository,
+      });
+    } finally {
+      workspace.close();
+      if (previousGitDir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = previousGitDir;
+    }
+  });
 });
 
 describe("local review snapshots", () => {
@@ -1531,6 +1547,42 @@ describe("local review snapshots", () => {
       expect(result.diff).toContain("rename from before-name.ts");
       expect(result.diff).not.toContain("new file mode");
       expect(result.stats).toEqual({ additions: 0, deletions: 0 });
+    } finally {
+      workspace.close();
+    }
+  });
+
+  it("prefers a rename target when exporting threads for a reused original path", async () => {
+    await writeFile(join(repository, "before-name.ts"), "original\n", "utf8");
+    await runGit("add", "before-name.ts");
+    await runGit("commit", "-m", "add reusable rename source");
+    await runGit("mv", "before-name.ts", "after-name.ts");
+    await writeFile(join(repository, "before-name.ts"), "new file\n", "utf8");
+
+    const workspace = new ReviewWorkspace(repository);
+    let resolvedPath = "";
+    try {
+      await workspace.initialize();
+      const internal = workspace as unknown as {
+        githubImports: {
+          hasCommentsForDiff: () => Promise<boolean>;
+          allComments: (
+            resolver: (path: string) => Promise<{ diff: DiffResponse }>,
+          ) => Promise<[]>;
+        };
+        importedReviewComments: () => Promise<[]>;
+      };
+      internal.githubImports = {
+        hasCommentsForDiff: () => Promise.resolve(false),
+        allComments: async (resolver) => {
+          const resolved = await resolver("before-name.ts");
+          resolvedPath = resolved.diff.path;
+          return [];
+        },
+      };
+
+      await internal.importedReviewComments();
+      expect(resolvedPath).toBe("after-name.ts");
     } finally {
       workspace.close();
     }

@@ -223,6 +223,11 @@ function git(
       {
         cwd: root,
         encoding: "utf8",
+        env: Object.fromEntries(
+          Object.entries(process.env).filter(
+            ([name]) => !name.startsWith("GIT_"),
+          ),
+        ),
         maxBuffer: 48 * 1024 * 1024,
         windowsHide: true,
       },
@@ -1937,10 +1942,10 @@ export class ReviewWorkspace {
   private async importedReviewComments() {
     return this.githubImportManager().allComments(async (path) => {
       const workspace = await this.getWorkspaceOnce(true);
-      const file = [...workspace.files, ...workspace.deferredFiles].find(
-        (candidate) =>
-          candidate.path === path || candidate.originalPath === path,
-      );
+      const files = [...workspace.files, ...workspace.deferredFiles];
+      const file =
+        files.find((candidate) => candidate.originalPath === path) ??
+        files.find((candidate) => candidate.path === path);
       if (!file) throw new Error("not_found");
       const diff = await this.getDiffOnce(file.path, 3);
       const contents = await this.displayedContents(

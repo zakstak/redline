@@ -8,6 +8,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -29,6 +30,7 @@ const MAX_RETRIEVAL_CALLS = 1_000;
 const MAX_RETRIEVAL_BYTES = 64 * 1024 * 1024;
 const MAX_SOURCE_CALLS = 500;
 const MAX_SOURCE_RAW_BYTES = 20 * 1024 * 1024;
+const STALE_IMPORT_TEMP_AGE_MS = 60 * 60_000;
 
 export interface GitHubIdentity {
   owner: string;
@@ -639,7 +641,17 @@ export class GitHubImportManager {
               entry.startsWith("github-imports.json.") &&
               entry.endsWith(".tmp"),
           )
-          .map((entry) => rm(resolve(directory, entry), { force: true })),
+          .map(async (entry) => {
+            const temporary = resolve(directory, entry);
+            try {
+              const metadata = await stat(temporary);
+              if (Date.now() - metadata.mtimeMs > STALE_IMPORT_TEMP_AGE_MS)
+                await rm(temporary, { force: true });
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+                throw error;
+            }
+          }),
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

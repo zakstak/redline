@@ -4,6 +4,7 @@ import {
   mkdir,
   readFile,
   rm,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -532,9 +533,14 @@ describe("GitHub import synchronization", () => {
     corrupt.sources[sourceId] = "corrupt bytes";
     await writeFile(storePath, JSON.stringify(corrupt));
     const incompleteStage = `${storePath}.crashed.tmp`;
+    const liveStage = `${storePath}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(incompleteStage, "incomplete");
+    await writeFile(liveStage, "active write");
+    const staleTime = new Date(Date.now() - 2 * 60 * 60_000);
+    await utimes(incompleteStage, staleTime, staleTime);
     expect(await importer.verifyForRead()).toMatchObject({ retained: false });
     await expect(access(incompleteStage)).rejects.toThrow();
+    await expect(access(liveStage)).resolves.toBeUndefined();
   });
 
   it("coalesces and validates same-origin avatar source data", async () => {
