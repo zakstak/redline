@@ -194,7 +194,9 @@ async function commentInput(path?: string) {
         !isRecord(anchor) ||
         (anchor.side !== "old" && anchor.side !== "new") ||
         !Number.isSafeInteger(anchor.startLine) ||
-        !Number.isSafeInteger(anchor.endLine),
+        !Number.isSafeInteger(anchor.endLine) ||
+        Number(anchor.startLine) < 1 ||
+        Number(anchor.endLine) < Number(anchor.startLine),
     )
   ) {
     throw new CliError(2, "Comment anchors are invalid.", "invocation");
@@ -212,6 +214,8 @@ async function approvalInput(path?: string) {
   if (
     !isRecord(value) ||
     !Array.isArray(value.files) ||
+    value.files.length < 1 ||
+    value.files.length > 5_000 ||
     value.files.some(
       (file) =>
         !isRecord(file) ||
@@ -346,7 +350,11 @@ async function executeServer(
       discovery,
       `/api/cli/diff?path=${encodeURIComponent(action)}`,
     );
-  if (group === "comments" && action === "export")
+  if (
+    group === "comments" &&
+    action === "export" &&
+    parsed.command.length === 2
+  )
     return serverRequest(
       origin,
       discovery,
@@ -354,30 +362,48 @@ async function executeServer(
       {},
       parsed.format === "markdown",
     );
-  if (group === "comments" && action === "add")
+  if (group === "comments" && action === "add" && parsed.command.length === 2)
     return serverRequest(origin, discovery, "/api/cli/comments", {
       method: "POST",
       body: JSON.stringify(await commentInput(parsed.input)),
     });
-  if (group === "approve" && action === "files")
+  if (group === "approve" && action === "files" && parsed.command.length === 2)
     return serverRequest(origin, discovery, "/api/cli/approve/files", {
       method: "POST",
       body: JSON.stringify(await approvalInput(parsed.input)),
     });
-  if (group === "approve" && action === "workspace" && !subject)
+  if (
+    group === "approve" &&
+    action === "workspace" &&
+    parsed.command.length === 2
+  )
     return serverRequest(origin, discovery, "/api/cli/approve/workspace", {
       method: "POST",
       body: "{}",
     });
-  if (group === "agent" && action === "review" && subject)
+  if (
+    group === "agent" &&
+    action === "review" &&
+    subject &&
+    parsed.command.length === 3
+  )
     return serverRequest(
       origin,
       discovery,
       `/api/cli/agent/review/${encodeURIComponent(subject)}`,
     );
-  if (group === "agent" && action === "review-all")
+  if (
+    group === "agent" &&
+    action === "review-all" &&
+    parsed.command.length === 2
+  )
     return serverRequest(origin, discovery, "/api/cli/agent/review-all");
-  if (group === "agent" && action === "respond" && subject) {
+  if (
+    group === "agent" &&
+    action === "respond" &&
+    subject &&
+    parsed.command.length === 3
+  ) {
     if (!parsed.decision)
       throw new CliError(2, "--decision is required.", "invocation");
     const packet = (await serverRequest(
@@ -412,7 +438,12 @@ async function executeServer(
       },
     );
   }
-  if (group === "agent" && action === "reopen" && subject) {
+  if (
+    group === "agent" &&
+    action === "reopen" &&
+    subject &&
+    parsed.command.length === 3
+  ) {
     const packet = (await serverRequest(
       origin,
       discovery,
@@ -450,11 +481,19 @@ async function executeDirect(parsed: Parsed, root: string) {
     if (group === "review" && !action) return await workspace.getReviewData();
     if (group === "diff" && action && !subject)
       return await workspace.getDiff(action);
-    if (group === "comments" && action === "export")
+    if (
+      group === "comments" &&
+      action === "export" &&
+      parsed.command.length === 2
+    )
       return parsed.format === "markdown"
         ? await workspace.getReviewMarkdown()
         : await workspace.getCommentExport();
-    if (group === "comments" && action === "add") {
+    if (
+      group === "comments" &&
+      action === "add" &&
+      parsed.command.length === 2
+    ) {
       const body = await commentInput(parsed.input);
       return await workspace.addComment({
         path: body.path,
@@ -463,11 +502,19 @@ async function executeDirect(parsed: Parsed, root: string) {
         body: body.body,
       });
     }
-    if (group === "approve" && action === "files") {
+    if (
+      group === "approve" &&
+      action === "files" &&
+      parsed.command.length === 2
+    ) {
       const body = await approvalInput(parsed.input);
       return await workspace.approveFiles(body.files);
     }
-    if (group === "approve" && action === "workspace" && !subject)
+    if (
+      group === "approve" &&
+      action === "workspace" &&
+      parsed.command.length === 2
+    )
       return await workspace.approveSnapshot();
     throw new CliError(2, "Unknown or incomplete command.", "invocation");
   } finally {

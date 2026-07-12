@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
-import { buildServer } from "../server/app.js";
+import { buildServer, bundledClientDir } from "../server/app.js";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
 import { THEME_COLOR_ROLES } from "../shared/theme.js";
 
@@ -15,6 +15,11 @@ afterEach(async () => {
 });
 
 describe("GET /api/health", () => {
+  it("resolves production client assets from the package instead of cwd", () => {
+    expect(bundledClientDir()).toBe(
+      fileURLToPath(new URL("../dist/client", import.meta.url)),
+    );
+  });
   it("returns the bootstrap health payload", async () => {
     const response = await app.inject({
       method: "GET",

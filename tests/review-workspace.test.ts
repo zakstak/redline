@@ -513,6 +513,16 @@ describe("local review snapshots", () => {
       state: "deferred",
     });
     expect(await workspace.getPendingThreadPackets()).toEqual([]);
+    await expect(
+      workspace.mutateThread({
+        commentId: comment.id,
+        expectedState: "deferred",
+        expectedRootVersion: 2,
+        expectedThreadRevision: 1,
+        requestId: "cannot-reopen-tombstone",
+        reopen: true,
+      }),
+    ).rejects.toThrow("invalid_state");
     workspace.close();
   });
 

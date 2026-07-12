@@ -144,11 +144,11 @@ Redline never falls back or replays it. The complete operation deadline is
 30,000 ms.
 
 Server URL precedence is `--server-url`, `REDLINE_SERVER_URL`, then
-`http://127.0.0.1:4322`. Only credential-free `http` origins on `localhost`,
-`127.0.0.0/8`, or `[::1]` are accepted. Paths, queries, fragments, redirects,
-remote hosts, wildcard hosts, and credentials are rejected. Every operation
-carries the discovered process token and canonical Git worktree identity, so a
-workspace switch or replacement process fails closed.
+`http://127.0.0.1:4322`. Only credential-free `http` origins on `localhost`, the
+exact IPv4 address `127.0.0.1`, or `[::1]` are accepted. Paths, queries,
+fragments, redirects, remote hosts, wildcard hosts, and credentials are
+rejected. Every operation carries the discovered process token and canonical Git
+worktree identity, so a workspace switch or replacement process fails closed.
 
 CLI outcomes:
 

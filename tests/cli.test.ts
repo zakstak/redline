@@ -286,6 +286,93 @@ describe("redline CLI", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["comments", "add"],
+    ["comments", "export"],
+    ["approve", "files"],
+  ])(
+    "rejects an extra operand for %s %s before mutation",
+    async (group, action) => {
+      vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      expect(
+        await run([
+          "--mode",
+          "direct",
+          "--workspace",
+          repository,
+          group,
+          action,
+          "typo",
+        ]),
+      ).toBe(2);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects non-positive anchors and invalid approval cardinality as invocation errors", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const commentPath = join(repository, "bad-comment.json");
+    const approvalPath = join(repository, "bad-approval.json");
+    await writeFile(
+      commentPath,
+      JSON.stringify({
+        path: "example.ts",
+        fingerprint: "fingerprint",
+        body: "Bad anchor",
+        anchors: [{ side: "new", startLine: 0, endLine: 1 }],
+      }),
+    );
+    await writeFile(approvalPath, JSON.stringify({ files: [] }));
+    expect(
+      await run([
+        "--mode",
+        "direct",
+        "--workspace",
+        repository,
+        "comments",
+        "add",
+        "--input",
+        commentPath,
+      ]),
+    ).toBe(2);
+    expect(
+      await run([
+        "--mode",
+        "direct",
+        "--workspace",
+        repository,
+        "approve",
+        "files",
+        "--input",
+        approvalPath,
+      ]),
+    ).toBe(2);
+    await writeFile(
+      approvalPath,
+      JSON.stringify({
+        files: Array.from({ length: 5_001 }, (_, index) => ({
+          path: `file-${index}`,
+          fingerprint: "x",
+        })),
+      }),
+    );
+    expect(
+      await run([
+        "--mode",
+        "direct",
+        "--workspace",
+        repository,
+        "approve",
+        "files",
+        "--input",
+        approvalPath,
+      ]),
+    ).toBe(2);
+  });
+
   it("classifies direct workspace validation failures as domain conflicts", async () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderr: string[] = [];

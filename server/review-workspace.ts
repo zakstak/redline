@@ -1675,6 +1675,8 @@ export class ReviewWorkspace {
       );
       if (prior) return this.packetForComment(prior);
       const current = await this.getThreadPacket(input.commentId);
+      if (input.reopen && current.comment.deleted)
+        throw new Error("invalid_state");
       if (
         input.acceptedContext &&
         current.comment.state === input.expectedState

@@ -4,6 +4,7 @@ import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { APP_NAME, HEALTH_STATUS } from "../shared/app-info.js";
 import { THEME_COLOR_ROLES } from "../shared/theme.js";
 import {
@@ -864,6 +865,12 @@ interface BuildServerOptions {
   workspaceDir?: string;
 }
 
+export function bundledClientDir() {
+  const compiled = fileURLToPath(new URL("../../client", import.meta.url));
+  const source = fileURLToPath(new URL("../dist/client", import.meta.url));
+  return existsSync(compiled) ? compiled : source;
+}
+
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: true });
   const workspace = new ReviewWorkspace(
@@ -1638,7 +1645,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
   });
 
-  const clientDir = options.clientDir ?? resolve(process.cwd(), "dist/client");
+  const clientDir = options.clientDir ?? bundledClientDir();
   const shouldServeStatic = options.serveStatic ?? existsSync(clientDir);
 
   if (shouldServeStatic) {
