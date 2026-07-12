@@ -3811,8 +3811,7 @@ export default function App() {
             ) : null}
             {githubStatus &&
             githubStatus.state !== "available" &&
-            githubStatus.state !== "failed" &&
-            githubStatus.state !== "none" ? (
+            githubStatus.state !== "failed" ? (
               <button
                 disabled={githubRefreshing}
                 onClick={() => void retryGithubDiscovery()}

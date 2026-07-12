@@ -46,6 +46,7 @@ interface PullRequestIdentity {
   headRefName: string;
   headSha: string;
   baseSha: string;
+  diffBaseSha: string;
 }
 
 interface StoredCoordinate {
@@ -1022,6 +1023,20 @@ export class GitHubImportManager {
         );
         if (forward.code !== 0 && reverse.code !== 0) continue;
       } else if (candidateHeadSha !== headSha) continue;
+      const mergeBase = await this.execute(
+        "git",
+        ["merge-base", baseSha, candidateHeadSha],
+        {
+          cwd: this.root,
+          timeoutMs: 10_000,
+          stdoutLimit: 1_024,
+          stderrLimit: 16_384,
+          signal,
+        },
+      );
+      const diffBaseSha = mergeBase.stdout.trim();
+      if (mergeBase.code !== 0 || !/^[0-9a-f]{40}$/i.test(diffBaseSha))
+        continue;
       matches.push({
         base,
         head: parseGitHubRemote(
@@ -1035,6 +1050,7 @@ export class GitHubImportManager {
         headRefName: headData.ref,
         headSha: candidateHeadSha,
         baseSha,
+        diffBaseSha,
       });
     }
     if (matches.length > 1) throw new Error("ambiguous_pull_request");
@@ -1139,8 +1155,10 @@ export class GitHubImportManager {
 
   async verifyForRead(): Promise<GitHubImportStatus> {
     const proofState = await this.gitState().catch(() => null);
+    let proofSucceeded = false;
     try {
       if ((await this.readStore()).snapshots.length === 0) {
+        proofSucceeded = true;
         this.activeIdentity = null;
         return {
           version: 1,
@@ -1151,6 +1169,7 @@ export class GitHubImportManager {
         };
       }
       const identity = await this.discoverIdentity();
+      proofSucceeded = true;
       if (!identity) {
         this.activeIdentity = null;
         return {
@@ -1192,7 +1211,8 @@ export class GitHubImportManager {
       };
     } finally {
       const currentState = await this.gitState().catch(() => null);
-      const verified = proofState !== null && currentState === proofState;
+      const verified =
+        proofSucceeded && proofState !== null && currentState === proofState;
       this.readIdentityVerified = verified;
       this.verifiedGitState = verified ? proofState : null;
       if (!verified) this.activeIdentity = null;
@@ -1362,7 +1382,7 @@ export class GitHubImportManager {
         )?.oid;
         const commitCandidate =
           coordinates.coordinate.side === "old"
-            ? identity.baseSha
+            ? identity.diffBaseSha
             : node.isOutdated
               ? (originalCommit ?? currentCommit)
               : (currentCommit ?? originalCommit);
@@ -1838,7 +1858,7 @@ export class GitHubImportManager {
         const displayed = thread.coordinate
           ? contents[thread.coordinate.side]
           : null;
-        const mapped =
+        let mapped =
           !thread.coordinate || !source || displayed === null
             ? {
                 anchor: null,
@@ -1847,6 +1867,20 @@ export class GitHubImportManager {
                   : "displayed_side_unavailable",
               }
             : mapGitHubAnchor(thread.coordinate, source, displayed, diff);
+        if (
+          !mapped.anchor &&
+          thread.coordinate?.side === "new" &&
+          source &&
+          contents.old !== null
+        ) {
+          const oldSide = mapGitHubAnchor(
+            { ...thread.coordinate, side: "old" },
+            source,
+            contents.old,
+            diff,
+          );
+          if (oldSide.anchor) mapped = oldSide;
+        }
         const alternateMapped =
           thread.alternateCoordinate &&
           source &&

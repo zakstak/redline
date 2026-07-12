@@ -247,6 +247,7 @@ describe("GitHub import synchronization", () => {
     const headSha = "a".repeat(40);
     let gitStateHead = headSha;
     const baseSha = "b".repeat(40);
+    const diffBaseSha = "c".repeat(40);
     const executor: CommandExecutor = async (command, args) => {
       await Promise.resolve();
       if (command === "git") {
@@ -283,13 +284,15 @@ describe("GitHub import synchronization", () => {
           return { stdout: `${gitStateHead}\n`, stderr: "", code: 0 };
         if (joined.startsWith("merge-base --is-ancestor"))
           return { stdout: "", stderr: "", code: 0 };
+        if (joined === `merge-base ${baseSha} ${headSha}`)
+          return { stdout: `${diffBaseSha}\n`, stderr: "", code: 0 };
         if (joined === `show ${headSha}:src/example.ts`) {
           abortOnSource?.abort();
           if (changeIdentityOnSource) gitStateHead = "e".repeat(40);
         }
         if (joined === `show ${headSha}:src/example.ts`)
           return { stdout: "before\nupdated\nafter\n", stderr: "", code: 0 };
-        if (joined === `show ${baseSha}:src/deleted.ts`)
+        if (joined === `show ${diffBaseSha}:src/deleted.ts`)
           return { stdout: "deleted\n", stderr: "", code: 0 };
       }
       if (command === "gh") {
@@ -477,7 +480,7 @@ describe("GitHub import synchronization", () => {
     expect(first).toEqual(second);
     expect(first).toMatchObject({ state: "available", retained: true });
     expect(threadCalls).toBe(1);
-    expect(gitCalls).toContain(`show ${baseSha}:src/deleted.ts`);
+    expect(gitCalls).toContain(`show ${diffBaseSha}:src/deleted.ts`);
     expect(gitCalls).not.toContain(`show ${headSha}:src/deleted.ts`);
     expect(ghCalls.length).toBeGreaterThan(0);
     expect(
@@ -499,6 +502,29 @@ describe("GitHub import synchronization", () => {
       anchors: [{ side: "new", startLine: 2, endLine: 2 }],
       replies: [{ author: { name: "Reply User" } }],
       github: { mapping: "mapped", repository: "base/project" },
+    });
+    const editedHead = await importer.commentsForDiff(
+      {
+        ...diff,
+        lines: [
+          {
+            id: "old-2",
+            type: "remove",
+            content: "updated",
+            oldLine: 2,
+            newLine: null,
+            anchors: [{ side: "old", startLine: 2, endLine: 2 }],
+          },
+        ],
+      },
+      {
+        old: "before\nupdated\nafter\n",
+        new: "before\nlocally changed\nafter\n",
+      },
+    );
+    expect(editedHead[0]).toMatchObject({
+      anchors: [{ side: "old", startLine: 2, endLine: 2 }],
+      github: { mapping: "mapped" },
     });
     const renamed = await importer.commentsForDiff(
       { ...diff, path: "src/renamed.ts" },
@@ -756,6 +782,7 @@ describe("GitHub import synchronization", () => {
           headRefName: string;
           headSha: string;
           baseSha: string;
+          diffBaseSha: string;
         },
         signal: AbortSignal,
       ): Promise<unknown>;
@@ -774,6 +801,7 @@ describe("GitHub import synchronization", () => {
         headRefName: "feature",
         headSha: "a".repeat(40),
         baseSha: "b".repeat(40),
+        diffBaseSha: "b".repeat(40),
       },
       controller.signal,
     );
@@ -870,6 +898,7 @@ describe("GitHub import synchronization", () => {
         headRefName: string;
         headSha: string;
         baseSha: string;
+        diffBaseSha: string;
       }>;
     };
     internals.gitState = () =>
@@ -889,12 +918,43 @@ describe("GitHub import synchronization", () => {
         headRefName: "feature",
         headSha: "a".repeat(40),
         baseSha: "b".repeat(40),
+        diffBaseSha: "b".repeat(40),
       });
 
     await importer.verifyForRead();
     expect(internals.readIdentityVerified).toBe(false);
     expect(internals.verifiedGitState).toBeNull();
     expect(internals.activeIdentity).toBeNull();
+  });
+
+  it("does not cache a failed retained identity proof", async () => {
+    const importer = new GitHubImportManager(repository, gitDir);
+    const internals = importer as unknown as {
+      readIdentityVerified: boolean;
+      verifiedGitState: string | null;
+      gitState(): Promise<string>;
+      readStore(): Promise<{
+        version: 1;
+        snapshots: Array<{ repository: string; pullRequest: number }>;
+        sources: Record<string, string>;
+      }>;
+      discoverIdentity(): Promise<never>;
+    };
+    internals.gitState = () => Promise.resolve("stable-state");
+    internals.readStore = () =>
+      Promise.resolve({
+        version: 1,
+        snapshots: [{ repository: "base/project", pullRequest: 1 }],
+        sources: {},
+      });
+    internals.discoverIdentity = () =>
+      Promise.reject(new Error("temporary_network_failure"));
+
+    await expect(importer.verifyForRead()).resolves.toMatchObject({
+      state: "unavailable",
+    });
+    expect(internals.readIdentityVerified).toBe(false);
+    expect(internals.verifiedGitState).toBeNull();
   });
 
   it("evicts inactive snapshots to admit source text for the current PR", () => {

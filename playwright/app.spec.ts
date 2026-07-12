@@ -479,6 +479,17 @@ test("reloads the displayed diff after retained retry discovery", async ({
   await expect.poll(() => diffRequests).toBe(2);
 });
 
+test("allows discovery retry when no pull request matched", async ({
+  page,
+}) => {
+  await mockReviewApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Snapshot 2$/ }).click();
+  await expect(
+    page.getByRole("button", { name: "Retry discovery" }),
+  ).toBeVisible();
+});
+
 test("collapses and restores the review panel", async ({ page }) => {
   await mockReviewApi(page);
   await page.goto("/");
