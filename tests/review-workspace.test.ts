@@ -12,7 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildServer } from "../server/app.js";
 import { ReviewWorkspace } from "../server/review-workspace.js";
 import type {
@@ -57,6 +57,24 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(repository, { recursive: true, force: true });
+});
+
+describe("workspace initialization", () => {
+  it("defers the full workspace scan until workspace data is requested", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    const getWorkspace = vi.spyOn(workspace, "getWorkspace");
+
+    try {
+      await workspace.initialize();
+
+      expect(getWorkspace).not.toHaveBeenCalled();
+
+      await workspace.openWorkspace(repository);
+      expect(getWorkspace).toHaveBeenCalledOnce();
+    } finally {
+      workspace.close();
+    }
+  });
 });
 
 describe("local review snapshots", () => {
