@@ -30,6 +30,21 @@ describe("GET /api/health", () => {
 });
 
 describe("static bootstrap serving", () => {
+  it("auto-detects a built client without requiring NODE_ENV", async () => {
+    app = buildServer({
+      clientDir: fixtureClientDir,
+      workspaceDir,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("<title>Fixture Shell</title>");
+  });
+
   it("serves the built shell for the root route", async () => {
     app = buildServer({
       clientDir: fixtureClientDir,
