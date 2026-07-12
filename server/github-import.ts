@@ -596,7 +596,11 @@ export class GitHubImportManager {
     stale: false,
     message: "GitHub pull request discovery has not run.",
   };
-  private refreshPromise: Promise<GitHubImportStatus> | null = null;
+  private refreshOperation: {
+    controller: AbortController;
+    promise: Promise<GitHubImportStatus>;
+    waiters: Set<symbol>;
+  } | null = null;
   private discoveryPromise: Promise<GitHubImportStatus> | null = null;
   private readIdentityVerified = false;
   private verifiedGitState: string | null = null;
@@ -849,7 +853,11 @@ export class GitHubImportManager {
   }
 
   private async ghJson(args: string[]) {
-    const output = await this.command("gh", ["api", ...args], true);
+    const output = await this.command(
+      "gh",
+      ["api", "--hostname", "github.com", ...args],
+      true,
+    );
     try {
       const parsed = JSON.parse(output) as unknown;
       if (
@@ -866,12 +874,16 @@ export class GitHubImportManager {
   }
 
   private async sourceGhJson(args: string[]) {
-    const result = await this.execute("gh", ["api", ...args], {
-      cwd: this.root,
-      timeoutMs: 10_000,
-      stdoutLimit: 2 * 1024 * 1024,
-      stderrLimit: 256 * 1024,
-    });
+    const result = await this.execute(
+      "gh",
+      ["api", "--hostname", "github.com", ...args],
+      {
+        cwd: this.root,
+        timeoutMs: 10_000,
+        stdoutLimit: 2 * 1024 * 1024,
+        stderrLimit: 256 * 1024,
+      },
+    );
     this.sourceOutputBytes += Buffer.byteLength(result.stdout);
     this.sourceStderrBytes += Buffer.byteLength(result.stderr);
     if (
@@ -1544,11 +1556,64 @@ export class GitHubImportManager {
   }
 
   async refresh(signal?: AbortSignal): Promise<GitHubImportStatus> {
-    if (this.refreshPromise) return this.refreshPromise;
-    this.refreshPromise = this.refreshOnce(signal).finally(() => {
-      this.refreshPromise = null;
+    let operation = this.refreshOperation;
+    if (!operation) {
+      const controller = new AbortController();
+      const waiters = new Set<symbol>();
+      operation = {
+        controller,
+        waiters,
+        promise: Promise.resolve(this.status),
+      };
+      const activeOperation = operation;
+      operation.promise = this.refreshOnce(controller.signal).finally(() => {
+        if (this.refreshOperation === activeOperation)
+          this.refreshOperation = null;
+      });
+      this.refreshOperation = operation;
+    }
+
+    const activeOperation = operation;
+    const waiter = Symbol("github-refresh-waiter");
+    activeOperation.waiters.add(waiter);
+    return new Promise<GitHubImportStatus>((resolveWaiter, rejectWaiter) => {
+      let settled = false;
+      const cleanup = () => {
+        signal?.removeEventListener("abort", onAbort);
+        activeOperation.waiters.delete(waiter);
+      };
+      const complete = (status: GitHubImportStatus) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolveWaiter(status);
+      };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        rejectWaiter(
+          error instanceof Error ? error : new Error("GitHub import failed."),
+        );
+      };
+      const onAbort = () => {
+        if (settled) return;
+        activeOperation.waiters.delete(waiter);
+        if (activeOperation.waiters.size === 0) {
+          activeOperation.controller.abort();
+          return;
+        }
+        complete({
+          ...this.status,
+          state: this.status.retained ? "available" : "unavailable",
+          stale: this.status.retained,
+          message: "GitHub import wait was cancelled.",
+        });
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+      activeOperation.promise.then(complete, fail);
     });
-    return this.refreshPromise;
   }
 
   private async refreshOnce(signal?: AbortSignal) {

@@ -19,6 +19,8 @@ import { ReviewWorkspace } from "../server/review-workspace.js";
 import type {
   CommentExportResponse,
   DiffResponse,
+  GitHubImportStatus,
+  ReviewComment,
   ReviewDataResponse,
 } from "../shared/review-contract.js";
 import { DEFAULT_THEME_PREFERENCE } from "../shared/theme.js";
@@ -62,6 +64,78 @@ afterEach(async () => {
 });
 
 describe("workspace initialization", () => {
+  it("verifies imported threads before lookup and preserves GitHub staleness", async () => {
+    const workspace = new ReviewWorkspace(repository);
+    try {
+      await workspace.initialize();
+      const current = (await workspace.getDiff("example.ts")).fingerprint;
+      const id = "github:base/project#1:thread-1";
+      const steps: string[] = [];
+      const manager = {
+        isImportedId: (candidate: string) => candidate === id,
+        verifyForRead: (): Promise<GitHubImportStatus> => {
+          steps.push("verify");
+          return Promise.resolve({
+            version: 1,
+            state: "available",
+            retained: true,
+            stale: false,
+            message: "Available.",
+          });
+        },
+      };
+      const internals = workspace as unknown as {
+        githubImports: typeof manager;
+        importedReviewComments(): Promise<ReviewComment[]>;
+      };
+      internals.githubImports = manager;
+      internals.importedReviewComments = () => {
+        steps.push("lookup");
+        return Promise.resolve([
+          {
+            id,
+            path: "example.ts",
+            anchors: [],
+            body: "Outdated upstream thread",
+            author: {
+              name: "Reviewer",
+              login: "reviewer",
+              initials: "R",
+              avatarUrl: null,
+            },
+            createdAt: "2026-07-12T00:00:00.000Z",
+            fingerprint: current,
+            outdated: true,
+            state: "pending",
+            rootVersion: 1,
+            threadRevision: 0,
+            replies: [],
+            source: "github",
+            readOnly: true,
+            github: {
+              repository: "base/project",
+              pullRequest: 1,
+              threadId: "thread-1",
+              url: "https://github.com/base/project/pull/1#discussion_r1",
+              mapping: "unmapped",
+              originalPath: "example.ts",
+              isResolved: false,
+              isOutdated: true,
+              resolved: false,
+              synchronizedAt: "2026-07-12T00:00:00.000Z",
+            },
+          },
+        ]);
+      };
+
+      const packet = await workspace.getThreadPacket(id);
+      expect(steps).toEqual(["verify", "lookup"]);
+      expect(packet.comment.outdated).toBe(true);
+    } finally {
+      workspace.close();
+    }
+  });
+
   it("defers the full workspace scan until workspace data is requested", async () => {
     const workspace = new ReviewWorkspace(repository);
     const getWorkspace = vi.spyOn(workspace, "getWorkspace");

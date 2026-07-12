@@ -19,7 +19,10 @@ import {
   safeGitHubLink,
   type CommandExecutor,
 } from "../server/github-import.js";
-import type { DiffResponse } from "../shared/review-contract.js";
+import type {
+  DiffResponse,
+  GitHubImportStatus,
+} from "../shared/review-contract.js";
 
 let repository = "";
 let gitDir = "";
@@ -225,6 +228,7 @@ describe("GitHub import synchronization", () => {
     let graphQLError = false;
     let abortOnSource: AbortController | null = null;
     let threadCalls = 0;
+    const ghCalls: string[][] = [];
     const headSha = "a".repeat(40);
     const baseSha = "b".repeat(40);
     const executor: CommandExecutor = async (command, args) => {
@@ -259,6 +263,7 @@ describe("GitHub import synchronization", () => {
           return { stdout: "before\nupdated\nafter\n", stderr: "", code: 0 };
       }
       if (command === "gh") {
+        ghCalls.push(args);
         const joined = args.join(" ");
         if (joined.includes("repos/base/project/pulls")) {
           return {
@@ -415,6 +420,15 @@ describe("GitHub import synchronization", () => {
     expect(first).toEqual(second);
     expect(first).toMatchObject({ state: "available", retained: true });
     expect(threadCalls).toBe(1);
+    expect(ghCalls.length).toBeGreaterThan(0);
+    expect(
+      ghCalls.every(
+        (args) =>
+          args[0] === "api" &&
+          args[1] === "--hostname" &&
+          args[2] === "github.com",
+      ),
+    ).toBe(true);
     const comments = await importer.commentsForDiff(diff, {
       old: "before\nafter\n",
       new: "before\nupdated\nafter\n",
@@ -541,6 +555,42 @@ describe("GitHub import synchronization", () => {
     expect(await importer.verifyForRead()).toMatchObject({ retained: false });
     await expect(access(incompleteStage)).rejects.toThrow();
     await expect(access(liveStage)).resolves.toBeUndefined();
+  });
+
+  it("keeps a shared refresh running while another waiter remains", async () => {
+    const importer = new GitHubImportManager(repository, gitDir);
+    let sharedSignal: AbortSignal | undefined;
+    let finish: ((status: GitHubImportStatus) => void) | undefined;
+    const internals = importer as unknown as {
+      refreshOnce(signal?: AbortSignal): Promise<GitHubImportStatus>;
+    };
+    internals.refreshOnce = (signal) => {
+      sharedSignal = signal;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    };
+
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const first = importer.refresh(firstController.signal);
+    const second = importer.refresh(secondController.signal);
+    firstController.abort();
+
+    await expect(first).resolves.toMatchObject({
+      message: "GitHub import wait was cancelled.",
+    });
+    expect(sharedSignal?.aborted).toBe(false);
+    finish?.({
+      version: 1,
+      state: "available",
+      retained: true,
+      stale: false,
+      message: "Import complete.",
+    });
+    await expect(second).resolves.toMatchObject({
+      message: "Import complete.",
+    });
   });
 
   it("coalesces and validates same-origin avatar source data", async () => {

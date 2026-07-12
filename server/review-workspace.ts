@@ -1715,7 +1715,7 @@ export class ReviewWorkspace {
   }
 
   private async packetForComment(
-    comment: Omit<ReviewComment, "outdated">,
+    comment: Omit<ReviewComment, "outdated"> & { outdated?: boolean },
   ): Promise<ReviewThreadPacket> {
     return this.readStable(async () => {
       const workspace = await this.getWorkspaceOnce(true);
@@ -1727,7 +1727,9 @@ export class ReviewWorkspace {
         workspaceRoot: workspace.root,
         comment: {
           ...comment,
-          outdated: current?.fingerprint !== comment.fingerprint,
+          outdated:
+            comment.outdated === true ||
+            current?.fingerprint !== comment.fingerprint,
         },
         currentFingerprint: current?.fingerprint ?? null,
         acceptedContext: {
@@ -1743,7 +1745,10 @@ export class ReviewWorkspace {
   }
 
   async getThreadPacket(id: string): Promise<ReviewThreadPacket> {
-    if (this.githubImportManager().isImportedId(id)) {
+    const manager = this.githubImportManager();
+    if (manager.isImportedId(id)) {
+      await manager.verifyForRead();
+      if (manager !== this.githubImports) throw new Error("workspace_mismatch");
       const imported = await this.importedReviewComments();
       const comment = imported.find((candidate) => candidate.id === id);
       if (!comment) throw new Error("not_found");
