@@ -602,6 +602,7 @@ export class GitHubImportManager {
     waiters: Set<symbol>;
   } | null = null;
   private discoveryPromise: Promise<GitHubImportStatus> | null = null;
+  private discoveryGitState: string | null = null;
   private readIdentityVerified = false;
   private verifiedGitState: string | null = null;
   private storeMutation = Promise.resolve();
@@ -726,7 +727,12 @@ export class GitHubImportManager {
     }
   }
 
-  private async command(command: string, args: string[], gh = false) {
+  private async command(
+    command: string,
+    args: string[],
+    gh = false,
+    signal?: AbortSignal,
+  ) {
     if (gh) {
       this.retrievalCalls += 1;
       if (
@@ -740,6 +746,7 @@ export class GitHubImportManager {
       timeoutMs: gh ? 15_000 : 10_000,
       stdoutLimit: gh ? 8 * 1024 * 1024 : 2 * 1024 * 1024,
       stderrLimit: gh ? 256 * 1024 : 256 * 1024,
+      signal,
     });
     if (gh) {
       this.retrievalBytes += Buffer.byteLength(result.stdout);
@@ -858,11 +865,12 @@ export class GitHubImportManager {
     return { base, head: parsed[0] as GitHubIdentity, branch };
   }
 
-  private async ghJson(args: string[]) {
+  private async ghJson(args: string[], signal?: AbortSignal) {
     const output = await this.command(
       "gh",
       ["api", "--hostname", "github.com", ...args],
       true,
+      signal,
     );
     try {
       const parsed = JSON.parse(output) as unknown;
@@ -879,7 +887,7 @@ export class GitHubImportManager {
     }
   }
 
-  private async sourceGhJson(args: string[]) {
+  private async sourceGhJson(args: string[], signal?: AbortSignal) {
     const result = await this.execute(
       "gh",
       ["api", "--hostname", "github.com", ...args],
@@ -888,6 +896,7 @@ export class GitHubImportManager {
         timeoutMs: 10_000,
         stdoutLimit: 2 * 1024 * 1024,
         stderrLimit: 256 * 1024,
+        signal,
       },
     );
     this.sourceOutputBytes += Buffer.byteLength(result.stdout);
@@ -1001,9 +1010,16 @@ export class GitHubImportManager {
   }
 
   async discover(): Promise<GitHubImportStatus> {
-    if (this.discoveryPromise) return this.discoveryPromise;
+    const state = await this.gitState();
+    if (this.discoveryPromise) {
+      if (this.discoveryGitState === state) return this.discoveryPromise;
+      await this.discoveryPromise;
+      return this.discover();
+    }
+    this.discoveryGitState = state;
     this.discoveryPromise = this.discoverOnce().finally(() => {
       this.discoveryPromise = null;
+      this.discoveryGitState = null;
     });
     return this.discoveryPromise;
   }
@@ -1069,6 +1085,8 @@ export class GitHubImportManager {
             : "unavailable";
       this.activeIdentity = null;
       this.activationTime = null;
+      this.readIdentityVerified = false;
+      this.verifiedGitState = null;
       this.status = {
         version: 1,
         state,
@@ -1145,24 +1163,30 @@ export class GitHubImportManager {
     }
   }
 
-  private async fetchThreads(identity: PullRequestIdentity) {
+  private async fetchThreads(
+    identity: PullRequestIdentity,
+    signal?: AbortSignal,
+  ) {
     const query = `query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{id isResolved isOutdated subjectType path line startLine diffSide startDiffSide originalLine originalStartLine comments(first:100){pageInfo{hasNextPage endCursor}nodes{id body createdAt updatedAt url state path line startLine originalLine originalStartLine outdated author{login avatarUrl ... on User{name}} commit{oid} originalCommit{oid}}}}}}}}`;
     const threads: StoredGitHubThread[] = [];
     let after: string | null = null;
     let complete = false;
     for (let page = 0; page < 1_000; page += 1) {
-      const response = (await this.ghJson([
-        "graphql",
-        "-f",
-        `query=${query}`,
-        "-F",
-        `owner=${identity.base.owner}`,
-        "-F",
-        `name=${identity.base.name}`,
-        "-F",
-        `number=${identity.number}`,
-        ...(after ? ["-F", `after=${after}`] : []),
-      ])) as Record<string, unknown>;
+      const response = (await this.ghJson(
+        [
+          "graphql",
+          "-f",
+          `query=${query}`,
+          "-F",
+          `owner=${identity.base.owner}`,
+          "-F",
+          `name=${identity.base.name}`,
+          "-F",
+          `number=${identity.number}`,
+          ...(after ? ["-F", `after=${after}`] : []),
+        ],
+        signal,
+      )) as Record<string, unknown>;
       const data = response.data as Record<string, unknown> | undefined;
       const repository = data?.repository as
         | Record<string, unknown>
@@ -1204,15 +1228,18 @@ export class GitHubImportManager {
             : null;
         while (commentAfter) {
           const nestedQuery = `query($id:ID!,$after:String!){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{id body createdAt updatedAt url state path line startLine originalLine originalStartLine outdated author{login avatarUrl ... on User{name}} commit{oid} originalCommit{oid}}}}}}`;
-          const nested = (await this.ghJson([
-            "graphql",
-            "-f",
-            `query=${nestedQuery}`,
-            "-F",
-            `id=${String(node.id)}`,
-            "-F",
-            `after=${commentAfter}`,
-          ])) as Record<string, unknown>;
+          const nested = (await this.ghJson(
+            [
+              "graphql",
+              "-f",
+              `query=${nestedQuery}`,
+              "-F",
+              `id=${String(node.id)}`,
+              "-F",
+              `after=${commentAfter}`,
+            ],
+            signal,
+          )) as Record<string, unknown>;
           const nestedNode = (
             nested.data as Record<string, unknown> | undefined
           )?.node as Record<string, unknown> | undefined;
@@ -1339,6 +1366,7 @@ export class GitHubImportManager {
   private async acquireSources(
     identity: PullRequestIdentity,
     threads: StoredGitHubThread[],
+    signal?: AbortSignal,
   ) {
     const sources: Record<string, string> = {};
     this.sourceCalls = 0;
@@ -1367,6 +1395,7 @@ export class GitHubImportManager {
     });
     let exhaustionReason: string | null = null;
     for (const [candidate, references] of ordered) {
+      if (signal?.aborted) throw new Error("cancelled");
       if (
         this.sourceCalls >= MAX_SOURCE_CALLS ||
         Date.now() - sourceStartedAt > 2 * 60_000
@@ -1383,7 +1412,9 @@ export class GitHubImportManager {
         timeoutMs: 10_000,
         stdoutLimit: 1024 * 1024,
         stderrLimit: 256 * 1024,
+        signal,
       }).catch(() => ({ stdout: "", stderr: "", code: 1 }));
+      if (signal?.aborted) throw new Error("cancelled");
       this.sourceOutputBytes += Buffer.byteLength(local.stdout);
       this.sourceStderrBytes += Buffer.byteLength(local.stderr);
       if (
@@ -1413,12 +1444,15 @@ export class GitHubImportManager {
           }
           this.sourceCalls += 1;
           try {
-            const encoded = (await this.sourceGhJson([
-              `repos/${sourceRepository.owner}/${sourceRepository.name}/contents/${path
-                .split("/")
-                .map(encodeURIComponent)
-                .join("/")}?ref=${encodeURIComponent(commit)}`,
-            ])) as Record<string, unknown>;
+            const encoded = (await this.sourceGhJson(
+              [
+                `repos/${sourceRepository.owner}/${sourceRepository.name}/contents/${path
+                  .split("/")
+                  .map(encodeURIComponent)
+                  .join("/")}?ref=${encodeURIComponent(commit)}`,
+              ],
+              signal,
+            )) as Record<string, unknown>;
             if (
               encoded.encoding === "base64" &&
               typeof encoded.content === "string"
@@ -1438,6 +1472,7 @@ export class GitHubImportManager {
               break;
             }
           } catch (error) {
+            if (signal?.aborted) throw new Error("cancelled");
             if (
               error instanceof Error &&
               error.message === "source_output_exhausted"
@@ -1660,9 +1695,9 @@ export class GitHubImportManager {
         (snapshot) => `${snapshot.repository}#${snapshot.pullRequest}` === key,
       );
       retainedOnFailure = Boolean(previous);
-      const threads = await this.fetchThreads(identity);
+      const threads = await this.fetchThreads(identity, signal);
       if (signal?.aborted) throw new Error("cancelled");
-      const sources = await this.acquireSources(identity, threads);
+      const sources = await this.acquireSources(identity, threads, signal);
       if (signal?.aborted) throw new Error("cancelled");
       const now = new Date().toISOString();
       const snapshot: StoredSnapshot = {

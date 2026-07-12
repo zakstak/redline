@@ -226,6 +226,7 @@ describe("GitHub import synchronization", () => {
   it("discovers one exact PR, coalesces refresh, and preserves a complete snapshot on failure", async () => {
     let failThreads = false;
     let graphQLError = false;
+    let failDiscovery = false;
     let abortOnSource: AbortController | null = null;
     let threadCalls = 0;
     const ghCalls: string[][] = [];
@@ -277,6 +278,8 @@ describe("GitHub import synchronization", () => {
         ghCalls.push(args);
         const joined = args.join(" ");
         if (joined.includes("repos/base/project/pulls")) {
+          if (failDiscovery)
+            return { stdout: "", stderr: "network unavailable", code: 1 };
           return {
             stdout: JSON.stringify([
               {
@@ -505,6 +508,16 @@ describe("GitHub import synchronization", () => {
       }),
     ).toHaveLength(1);
 
+    failDiscovery = true;
+    expect(await importer.discover()).toMatchObject({ state: "unavailable" });
+    failDiscovery = false;
+    expect(
+      await importer.commentsForDiff(diff, {
+        old: "before\nafter\n",
+        new: "before\nupdated\nafter\n",
+      }),
+    ).toHaveLength(1);
+
     const retainedReader = new GitHubImportManager(
       repository,
       gitDir,
@@ -644,6 +657,104 @@ describe("GitHub import synchronization", () => {
     await expect(second).resolves.toMatchObject({
       message: "Import complete.",
     });
+  });
+
+  it("keys coalesced discovery to the git state", async () => {
+    const importer = new GitHubImportManager(repository, gitDir);
+    let state = "feature\0head-a\0origin-a";
+    let finishFirst: ((status: GitHubImportStatus) => void) | undefined;
+    let calls = 0;
+    const internals = importer as unknown as {
+      gitState(): Promise<string>;
+      discoverOnce(): Promise<GitHubImportStatus>;
+    };
+    internals.gitState = () => Promise.resolve(state);
+    internals.discoverOnce = () => {
+      calls += 1;
+      if (calls === 1)
+        return new Promise((resolve) => {
+          finishFirst = resolve;
+        });
+      return Promise.resolve({
+        version: 1,
+        state: "available",
+        retained: false,
+        stale: false,
+        message: "Current branch.",
+      });
+    };
+
+    const first = importer.discover();
+    await vi.waitFor(() => expect(calls).toBe(1));
+    state = "other\0head-b\0origin-b";
+    const second = importer.discover();
+    finishFirst?.({
+      version: 1,
+      state: "available",
+      retained: false,
+      stale: false,
+      message: "Previous branch.",
+    });
+
+    await expect(first).resolves.toMatchObject({ message: "Previous branch." });
+    await expect(second).resolves.toMatchObject({ message: "Current branch." });
+    expect(calls).toBe(2);
+  });
+
+  it("propagates refresh cancellation into GitHub retrieval", async () => {
+    let retrievalSignal: AbortSignal | undefined;
+    const executor: CommandExecutor = (command, args, options) => {
+      if (command !== "gh" || !args.includes("graphql"))
+        return Promise.resolve({ stdout: "", stderr: "", code: 1 });
+      retrievalSignal = options.signal;
+      return new Promise((resolve) => {
+        options.signal?.addEventListener(
+          "abort",
+          () => resolve({ stdout: "", stderr: "cancelled", code: 1 }),
+          { once: true },
+        );
+      });
+    };
+    const importer = new GitHubImportManager(repository, gitDir, executor);
+    const internals = importer as unknown as {
+      retrievalCalls: number;
+      retrievalBytes: number;
+      retrievalStderrBytes: number;
+      retrievalStartedAt: number;
+      fetchThreads(
+        identity: {
+          base: { owner: string; name: string; normalized: string };
+          head: { owner: string; name: string; normalized: string };
+          number: number;
+          title: string;
+          headRefName: string;
+          headSha: string;
+          baseSha: string;
+        },
+        signal: AbortSignal,
+      ): Promise<unknown>;
+    };
+    internals.retrievalCalls = 0;
+    internals.retrievalBytes = 0;
+    internals.retrievalStderrBytes = 0;
+    internals.retrievalStartedAt = Date.now();
+    const controller = new AbortController();
+    const fetching = internals.fetchThreads(
+      {
+        base: { owner: "base", name: "project", normalized: "base/project" },
+        head: { owner: "base", name: "project", normalized: "base/project" },
+        number: 1,
+        title: "Feature",
+        headRefName: "feature",
+        headSha: "a".repeat(40),
+        baseSha: "b".repeat(40),
+      },
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(retrievalSignal).toBe(controller.signal));
+    controller.abort();
+    await expect(fetching).rejects.toThrow();
+    expect(retrievalSignal?.aborted).toBe(true);
   });
 
   it("evicts inactive snapshots to admit source text for the current PR", () => {
